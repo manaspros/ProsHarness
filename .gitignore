@@ -1,0 +1,11 @@
+claude-codex-backup-*.zip
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+.env
+.env.*
+~/.pros/
+.pros/
+*.log
+.DS_Store

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": [
+    {
+      "slug": "obra/brainstorming",
+      "registryRef": "obra/brainstorming@sha256:9348e40f0a335da04d29dfd6ebf93a6e6b05e3a4aa502f68a341d24c15c9111d",
+      "sourceType": "github",
+      "source": "https://github.com/obra/superpowers/tree/main/skills/brainstorming",
+      "skillPath": ".claude/skills/skillrank-brainstorming/SKILL.md",
+      "surface": ".claude/skills",
+      "computedHash": "sha256:9348e40f0a335da04d29dfd6ebf93a6e6b05e3a4aa502f68a341d24c15c9111d",
+      "localHash": "sha256:ec3d096a72460582886cfadd998120aa9767e2e9a06bf7985fd1e42c0834a16f",
+      "pinnedCommit": "44c9b2d6e889982ac18c27d05a19fefe335194e1",
+      "installedAt": "2026-08-14T13:27:23Z"
+    }
+  ]
+}
