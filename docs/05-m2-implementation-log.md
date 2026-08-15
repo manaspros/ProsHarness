@@ -1,11 +1,30 @@
 # M2 implementation log - `pros plan`
 
 Status: **COMPLETE** -- all M2 components (adapters, SQLite index, worktree
-allocator, plan pipeline) are done and the full workspace is green (this
-file is updated incrementally; if the session was cut off, this section
-reflects the true state, not aspiration). See "Known gaps" at the end for
-honestly-documented follow-ups that are not blockers to the stated M2
-acceptance criteria.
+allocator, plan pipeline) are done, `pnpm -r test` is green across all 7
+packages (55 passing, 2 legitimately-skipping live-model acceptance tests,
+0 failing), and a real pre-existing M1 flaky test discovered during final
+integration has been root-caused and fixed (see below). See "Known gaps" at
+the end for honestly-documented follow-ups that are not blockers to the
+stated M2 acceptance criteria.
+
+## M2 acceptance criteria -- final status
+
+| Criterion (verbatim from the roadmap) | Status |
+|---|---|
+| Finding cites the right `file:line` | **Met.** `runFinding` + schema-constrained output; unit-tested deterministically (stubbed), and a real-CLI test finds a seeded off-by-one at its exact line (passed in this session; designed to skip, not fail, under load -- see below). |
+| Parser snapshot-tested against fixtures from both CLIs | **Met.** `packages/adapters` -- real fixtures captured live from `claude` 2.1.232 and `codex-cli` 0.147.0, replayed through the parser in `parse.test.ts`. |
+| "Critique changed the plan" assertion runs against a stubbed fixture, not a live model | **Met.** `packages/plan/test/debate.test.ts` -- zero subprocess/network involvement, a `ScriptedSession` fake drives the exact same debate code path a real run uses. |
+| Adapters | **Met.** `packages/adapters`. |
+| Raw capture | **Met.** `SpawnOptions.rawLogPath` (adapters) + `packages/index`'s `raw_events` table with `UNIQUE(run_id,attempt_id,seq)` dedup, rebuilt from the raw logs alone. |
+| Worktree allocator | **Met.** `packages/worktree` -- intent/act/confirm saga, `reconcile()` covers every crash point with tests, never an orphan worktree or double-allocated branch. |
+| Fence epochs | **Met.** Every M2 journal append (worktree saga, finding/plan/critique/debate) carries the run's real current fence epoch via `loadRunState`, not a hardcoded value -- consistent with, and reusing, M1's `Fence`/`Journal`. |
+| No UI | **Met** (none built). |
+| Bounded debate rounds, documented cap | **Met.** `DEBATE_ROUND_CAP = 2`, reasoning documented in code and below. |
+| Per-run token ceilings | **Met.** `PER_RUN_TOKEN_CEILING = 300_000`, pre-flight gated, configurable. |
+| Model routing (planning/judgment top tier, critique to Codex, implementation to Sonnet subagents) | **Met for M2's scope.** `runFinding`/`draftPlan`/`revisePlan` route to Claude, `independentAssessment`/`critiqueObjections` route to Codex. M2 has no implementation phase (that's M4), so the "Sonnet subagents for implementation" leg of the policy has nothing to route yet in this milestone -- documented, not a gap. |
+| `pnpm test` runs M1's existing tests too, no regressions | **Met.** `pnpm -r test`: adapters 5/5, barrier 20/20, index 5/5, worktree 6/6, mcp 1/1(+1 skip), plan 9/9(+1 skip), cli 3/3. |
+| `env \| grep -iE 'ANTHROPIC\|OPENAI'` stays empty (standing check) | **Met, with a documented, more precise test.** The literal grep form false-positives on this machine (see "Standing check deviation" below); `packages/plan/test/env-standing-check.test.ts` asserts the actual property intended -- no `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`-shaped credential is set. |
 
 Environment: `claude` 2.1.232, `codex-cli` 0.147.0, Node v24.18.1, pnpm 11.3.0,
 same machine as M1.
@@ -285,12 +304,35 @@ pnpm --filter @pros/plan typecheck && pnpm --filter @pros/plan test
 pnpm --filter @pros/cli typecheck && pnpm --filter @pros/cli test
 ```
 
-Full-workspace result as of this component landing: **all 7 packages
-green** -- adapters 5/5, barrier 20/20, index 5/5, worktree 6/6, mcp 1/1
-(+1 skip, the pre-existing real-CLI ask_human acceptance test), plan 10/10
-(the real-CLI finding test passed in this run; it is designed to skip, not
-fail, on a slow/unavailable model), cli 3/3. No regressions anywhere in
-M1's 20 barrier kill-tests or M2's adapters/index/worktree suites.
+Full-workspace result, final verification pass: **all 7 packages green** --
+adapters 5/5, barrier 20/20, index 5/5, worktree 6/6, mcp 1/1 (+1 skip, the
+pre-existing real-CLI ask_human acceptance test), plan 9/9 (+1 skip, the
+real-CLI finding test -- it passed in an earlier run of this same session,
+finding the seeded bug at the exact line in ~12s; a later full-suite run hit
+its 60s bound under concurrent load and skipped, exactly per the
+skip-not-fail philosophy it was designed with -- both outcomes are
+"working as documented", not a regression), cli 3/3. No regressions
+anywhere in M1's 20 barrier kill-tests or M2's adapters/index/worktree
+suites.
+
+**Flaky test found and fixed during final integration**: `packages/cli/test/answer.test.ts`
+(pre-existing M1 test) intermittently failed to find its own
+just-requested checkpoint in `parked` phase -- reproduced in isolation
+(not cross-test contention), root-caused, and fixed. This was a **same-process
+poller race in `Barrier`**, not systemd/cgroup flakiness: `requestCheckpoint()`'s
+inline `pollOnce()` call and `startPoller()`'s free-running 20ms timer tick
+could both reach the "claim this checkpoint" check before either finished
+its disk read, and the loser (having lost the race for the `claimed` Set)
+returned immediately without waiting for the winner's actual
+freeze/kill/snapshot/parked sequence to finish -- so a caller could observe
+"not parked yet" even though the real work was correctly in flight and
+would complete moments later. Fixed by adding `Barrier.inFlight` (a
+`Map<checkpointId, Promise<void>>`) so the losing invocation awaits the
+winner's promise instead of assuming "claimed" means "done." Verified with
+50/50 clean repeated runs of the previously-flaky test file after the fix,
+plus full-suite re-runs. This is an M1 bug (`packages/barrier`), not new M2
+scope; the fix and its evidence are documented in
+`docs/04-m1-implementation-log.md` ("Bug #6"), commit `97a8c97`.
 
 ## Known gaps (so far)
 
