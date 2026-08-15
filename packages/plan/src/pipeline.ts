@@ -28,8 +28,8 @@ export interface PlanPipelineResult {
   objectionsJsonPath: string;
 }
 
-/** Atomic temp-write + rename + fsync(file) + fsync(dir) -- same durability discipline as barrier's manifest.ts / worktree's allocator.ts. */
-async function writeFileAtomic(finalPath: string, body: string): Promise<void> {
+/** Atomic temp-write + rename + fsync(file) + fsync(dir) -- same durability discipline as barrier's manifest.ts / worktree's allocator.ts. Exported so gate1.ts (plan editing, M3) can reuse it rather than duplicate it. */
+export async function writeFileAtomic(finalPath: string, body: string): Promise<void> {
   const dir = path.dirname(finalPath);
   const tmpPath = path.join(dir, `.${path.basename(finalPath)}.tmp-${process.pid}-${Date.now()}`);
   const fh = await open(tmpPath, "w");

@@ -28,6 +28,10 @@ export interface CheckpointRecord {
   answer?: string;
   effect?: string;
   manifestPath?: string;
+  /** Which human gate this is. Defaults to "ask_human" for entries written before this field existed. */
+  gateType?: "ask_human" | "plan_approval";
+  /** Present only when gateType is "plan_approval". */
+  planRef?: { planId: string; version: number };
 }
 
 export interface RunState {
@@ -36,6 +40,8 @@ export interface RunState {
   checkpoints: Map<string, CheckpointRecord>;
   /** idempotencyKey -> checkpointId, so a replayed ask_human call cannot mint a second question. */
   idempotencyIndex: Map<string, string>;
+  /** Corroborating (never authoritative) evidence from hook payloads received for this run -- see packages/mcp/src/exit-plan-mode-hook.ts. Appended to, never keyed/deduped. */
+  hookPayloads: Array<{ hookName: string; sessionId: string | null; cwd: string | null; valid: boolean; reason: string | null; seq: number }>;
   lastSeq: number;
   truncated: boolean;
 }
@@ -46,6 +52,7 @@ export function projectRunState(entries: JournalEntry[]): RunState {
     attempts: new Map(),
     checkpoints: new Map(),
     idempotencyIndex: new Map(),
+    hookPayloads: [],
     lastSeq: -1,
     truncated: false,
   };
@@ -83,6 +90,10 @@ export function projectRunState(entries: JournalEntry[]): RunState {
             prompt: e.prompt,
             options: e.options,
             phase: "checkpoint_requested",
+            // Default to "ask_human" for backward compatibility with journal
+            // entries written before gateType existed.
+            gateType: e.gateType ?? "ask_human",
+            planRef: e.planRef,
           });
         }
         break;
@@ -129,6 +140,24 @@ export function projectRunState(entries: JournalEntry[]): RunState {
       }
       case "fence_bumped":
         state.fenceEpoch = e.newEpoch;
+        break;
+      case "plan_edited":
+        // Does not affect attempts/checkpoints/fence -- the plan document's
+        // own content lives on disk (plan.md) and, at the index-package
+        // layer, in the `plans` table. Handled explicitly here (rather than
+        // falling into `default`) so the intent is unambiguous to a future
+        // reader: this entry kind is real and recognized, it's just a no-op
+        // for RunState specifically.
+        break;
+      case "hook_payload_received":
+        state.hookPayloads.push({
+          hookName: e.hookName,
+          sessionId: e.sessionId,
+          cwd: e.cwd,
+          valid: e.valid,
+          reason: e.reason,
+          seq: e.seq,
+        });
         break;
       default:
         break;

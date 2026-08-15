@@ -1,0 +1,11 @@
+{
+  "session_id": "session-abc123",
+  "transcript_path": "/tmp/pros-test/transcript.jsonl",
+  "cwd": "/home/user/project",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "ExitPlanMode",
+  "tool_input": {},
+  "tool_response": {
+    "isAgentPlan": true
+  }
+}

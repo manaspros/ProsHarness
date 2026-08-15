@@ -12,6 +12,8 @@ export interface PlanRow {
   structured_json: string;
   state: string;
   unresolved_objections_json: string | null;
+  edited_at: string | null;
+  edited_by: string | null;
 }
 
 export interface ObjectionRow {

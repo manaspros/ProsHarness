@@ -10,6 +10,9 @@ Read in this order:
 | [`01-m0-results.md`](01-m0-results.md) | What we measured on the real CLIs. All fact, no inference. |
 | [`02-research-findings.md`](02-research-findings.md) | Evidence behind the decisions: OMP/prime, vibe-kanban, ref.tools, the learning loop, the skills landscape. |
 | [`03-architecture.md`](03-architecture.md) | The implementable design: invariants, data model, state machine, milestones. |
+| [`04-m1-implementation-log.md`](04-m1-implementation-log.md) | M1 complete: the checkpoint barrier -- guardian/cgroup containment, durable journal, manifest, fenced resume, `ask_human` MCP, `pros answer` CLI. |
+| [`05-m2-implementation-log.md`](05-m2-implementation-log.md) | M2 complete: `pros plan` -- adapters, rebuildable SQLite index, worktree allocator saga, plan/critique/debate pipeline. |
+| [`06-m3-implementation-log.md`](06-m3-implementation-log.md) | M3: Gate 1 -- `submit_plan`, the `ExitPlanMode` hook, the dashboard, ntfy push. |
 
 ## The three facts the whole design rests on
 

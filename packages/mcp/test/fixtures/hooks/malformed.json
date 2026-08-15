@@ -1,0 +1,8 @@
+{
+  "session_id": "session-abc123",
+  "transcript_path": "/tmp/pros-test/transcript.jsonl",
+  "cwd": "/home/user/project",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "ExitPlanMode",
+  "tool_input": {
+    "plan": "# Plan: something got cut off mid-write when the process was

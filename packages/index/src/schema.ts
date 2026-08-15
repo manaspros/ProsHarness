@@ -64,6 +64,8 @@ CREATE TABLE IF NOT EXISTS plans (
   structured_json TEXT NOT NULL,
   state TEXT NOT NULL,
   unresolved_objections_json TEXT,
+  edited_at TEXT,
+  edited_by TEXT,
   UNIQUE(run_id, version)
 );
 

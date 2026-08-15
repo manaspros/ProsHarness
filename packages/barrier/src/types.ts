@@ -50,6 +50,10 @@ export type JournalEntry = JournalEntryBase &
         idempotencyKey: string;
         prompt: string;
         options: string[];
+        /** Which human gate this is. Defaults to "ask_human" when absent (old journal entries, and plain ask_human calls). */
+        gateType?: "ask_human" | "plan_approval";
+        /** Present only when gateType is "plan_approval": which plan version this approval gate concerns. */
+        planRef?: { planId: string; version: number };
       }
     | { kind: "quiescing"; checkpointId: string; attemptId: string }
     | {
@@ -99,6 +103,26 @@ export type JournalEntry = JournalEntryBase &
     | { kind: "plan_revised"; planId: string; version: number; markdown: string; structuredJson: string; round: number }
     | { kind: "debate_capped"; planId: string; roundsRun: number; reason: string }
     | { kind: "plan_finalized"; planId: string; version: number; unresolvedObjectionsJson: string }
+    // --- M3: Gate 1 (plan approval) ---
+    | {
+        /** A human (via dashboard or CLI) edited the plan document directly, WITHOUT restarting the run or touching the fence epoch or any attempt. This is the mechanism behind the M3 acceptance criterion "plan editing changes the document without restarting the run." */
+        kind: "plan_edited";
+        planId: string;
+        version: number;
+        markdown: string;
+        editedBy: string; // e.g. "human" or a name/email; caller-supplied, not validated
+        note?: string;
+      }
+    | {
+        /** Corroborating evidence from the ExitPlanMode PostToolUse hook (ref.tools' mechanism). NEVER authoritative on its own -- see packages/mcp's exit-plan-mode-hook.ts. Recorded purely for audit/cross-check; a run's plan-approval state is determined ENTIRELY by checkpoint_requested/parked/answered entries, never by this. */
+        kind: "hook_payload_received";
+        hookName: string; // e.g. "PostToolUse:ExitPlanMode"
+        sessionId: string | null;
+        cwd: string | null;
+        valid: boolean;
+        reason: string | null; // why `valid` is false, if it is
+        rawJsonExcerpt: string; // the raw payload (or as much as reasonably captured), truncated to a sane length (e.g. 20000 chars) so a huge plan doesn't bloat the journal disproportionately
+      }
   );
 
 export interface Manifest {

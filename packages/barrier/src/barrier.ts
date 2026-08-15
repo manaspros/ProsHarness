@@ -22,7 +22,20 @@ export interface CheckpointRequest {
   idempotencyKey: string;
   prompt: string;
   options: string[];
+  /** Which human gate this is. Defaults to "ask_human" if not given, so existing ask-human.ts call sites need zero changes. */
+  gateType?: "ask_human" | "plan_approval";
+  /** Present only when gateType is "plan_approval". */
+  planRef?: { planId: string; version: number };
 }
+
+type ParkedListener = (info: {
+  runId: string;
+  checkpointId: string;
+  questionId: string;
+  gateType: "ask_human" | "plan_approval";
+  prompt: string;
+  planRef?: { planId: string; version: number };
+}) => void;
 
 /**
  * The standalone checkpoint-barrier supervisor (M1's first commit).
@@ -59,6 +72,7 @@ export class Barrier {
   private loggedDeferrals = new Set<string>();
   private pollTimer: NodeJS.Timeout | undefined;
   private state: RunState;
+  private parkedListeners: ParkedListener[] = [];
 
   private constructor(
     public readonly runDir: string,
@@ -139,6 +153,8 @@ export class Barrier {
         idempotencyKey: cp.idempotencyKey,
         prompt: cp.prompt,
         options: cp.options,
+        gateType: cp.gateType,
+        planRef: cp.planRef,
       };
       const promise = this.proceedCheckpoint(req, cp.checkpointId).finally(() => {
         this.inFlight.delete(cp.checkpointId);
@@ -220,6 +236,34 @@ export class Barrier {
     return this.guardians.get(attemptId);
   }
 
+  /**
+   * Register a callback fired (fire-and-forget, NEVER awaited by the barrier
+   * sequence, NEVER able to throw into it) every time this Barrier instance
+   * parks a checkpoint -- via EITHER `proceedCheckpoint` OR `parkForGate1`.
+   * Returns an unsubscribe function. Used by @pros/notify to push an ntfy
+   * notification without any possibility of a slow/failing notifier wedging
+   * the barrier sequence (an explicit M3 requirement: "a failed push must
+   * never wedge a run or lose a question").
+   */
+  onParked(cb: ParkedListener): () => void {
+    this.parkedListeners.push(cb);
+    return () => {
+      this.parkedListeners = this.parkedListeners.filter((l) => l !== cb);
+    };
+  }
+
+  private fireParked(info: Parameters<ParkedListener>[0]): void {
+    // Fire-and-forget: scheduled on a microtask, wrapped in try/catch. A
+    // thrown or rejected callback must never propagate back into the caller
+    // of proceedCheckpoint/parkForGate1 -- notification is corroborating,
+    // never load-bearing for the barrier sequence itself.
+    for (const cb of this.parkedListeners) {
+      Promise.resolve()
+        .then(() => cb(info))
+        .catch(() => undefined);
+    }
+  }
+
   // ---- safe-to-checkpoint critical section -------------------------------
 
   async enterUnsafeSection(sectionId: string): Promise<void> {
@@ -280,6 +324,8 @@ export class Barrier {
       idempotencyKey: req.idempotencyKey,
       prompt: req.prompt,
       options: req.options,
+      gateType: req.gateType ?? "ask_human",
+      planRef: req.planRef,
     });
     this.state = await loadRunState(this.runDir);
 
@@ -362,8 +408,110 @@ export class Barrier {
       workingStateHash: manifest.workingStateHash,
     });
 
+    this.fireParked({
+      runId: this.runId,
+      checkpointId,
+      questionId: req.questionId,
+      gateType: req.gateType ?? "ask_human",
+      prompt: req.prompt,
+      planRef: req.planRef,
+    });
+
     await this.endAttempt(req.attemptId, "parked");
     this.state = await loadRunState(this.runDir);
+  }
+
+  /**
+   * Parks a run for a human gate when there is NO live attempt/guardian to
+   * freeze -- e.g. `pros plan`'s pipeline, where the finding/debate model
+   * calls have already completed by the time the plan needs Gate 1
+   * approval. Skips guardian quiesce (there is nothing running to quiesce)
+   * but performs every other step of the barrier sequence: durable intent,
+   * manifest snapshot (staged+unstaged+untracked), durable `parked`.
+   * Idempotent on `idempotencyKey` exactly like `requestCheckpoint`.
+   */
+  async parkForGate1(opts: {
+    cwd: string;
+    prompt: string;
+    options: string[];
+    questionId: string;
+    idempotencyKey: string;
+    planRef: { planId: string; version: number };
+  }): Promise<{ checkpointId: string }> {
+    // Idempotency check, same as requestCheckpoint: a replayed call after a
+    // crash must not mint a second question.
+    const existing = this.state.idempotencyIndex.get(opts.idempotencyKey);
+    if (existing) {
+      return { checkpointId: existing };
+    }
+
+    const checkpointId = randomUUID();
+    const attemptId = "gate1-pipeline"; // synthetic: no live attempt/guardian backs a plan-approval gate
+
+    // Step 1: durable-append the checkpoint intent, before any other action.
+    await this.journal.append({
+      runId: this.runId,
+      fenceEpoch: this.fence.current(),
+      kind: "checkpoint_requested",
+      checkpointId,
+      attemptId,
+      questionId: opts.questionId,
+      idempotencyKey: opts.idempotencyKey,
+      prompt: opts.prompt,
+      options: opts.options,
+      gateType: "plan_approval",
+      planRef: opts.planRef,
+    });
+
+    // Step 2 (no-op here): there is no live containment boundary to freeze.
+    // Step 3 (no-op here): nothing to quiesce -- still record the transition
+    // for a consistent phase progression in the journal/RunState.
+    await this.journal.append({
+      runId: this.runId,
+      fenceEpoch: this.fence.current(),
+      kind: "quiescing",
+      checkpointId,
+      attemptId,
+    });
+
+    // Step 4: snapshot the manifest -- HEAD, base SHA, and a working-state
+    // hash covering staged+unstaged+untracked -- and fsync it.
+    const baseSha = await computeHeadSha(opts.cwd);
+    const manifest = await snapshotManifest(this.runDir, {
+      runId: this.runId,
+      cwd: opts.cwd,
+      baseSha,
+      fenceEpoch: this.fence.current(),
+      launchConfig: {
+        provider: "fixture",
+        command: "",
+        args: [],
+        cwd: opts.cwd,
+      },
+    });
+
+    // Step 5: durable-append `parked`. Only now is the run actually parked.
+    await this.journal.append({
+      runId: this.runId,
+      fenceEpoch: this.fence.current(),
+      kind: "parked",
+      checkpointId,
+      attemptId,
+      manifestPath: path.join(this.runDir, "manifest.json"),
+      workingStateHash: manifest.workingStateHash,
+    });
+
+    this.fireParked({
+      runId: this.runId,
+      checkpointId,
+      questionId: opts.questionId,
+      gateType: "plan_approval",
+      prompt: opts.prompt,
+      planRef: opts.planRef,
+    });
+
+    this.state = await loadRunState(this.runDir);
+    return { checkpointId };
   }
 
   // ---- answers ------------------------------------------------------------

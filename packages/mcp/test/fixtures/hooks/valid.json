@@ -1,0 +1,14 @@
+{
+  "session_id": "session-abc123",
+  "transcript_path": "/tmp/pros-test/transcript.jsonl",
+  "cwd": "/home/user/project",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "ExitPlanMode",
+  "tool_input": {
+    "plan": "# Plan: Fix the flaky retry logic\n\n## Background\n\nThe retry helper in `src/retry.ts` currently swallows the underlying error when all attempts are exhausted, which makes failures hard to diagnose in production logs. This plan proposes a small, backward-compatible fix.\n\n## Steps\n\n1. Change `retry()` to accumulate the last error seen across attempts and rethrow it (wrapped in a `RetryExhaustedError`) instead of a generic message.\n2. Add a unit test asserting the wrapped error's `cause` is the original error.\n3. Update the two call sites in `src/sync.ts` and `src/upload.ts` to log `err.cause` when a `RetryExhaustedError` is caught.\n\n## Risks\n\nLow risk: the change is additive to the error object and does not alter control flow or retry timing. Existing callers that only check `err instanceof Error` are unaffected.\n"
+  },
+  "tool_response": {
+    "plan": "# Plan: Fix the flaky retry logic\n\n(same content as tool_input.plan)\n",
+    "isAgentPlan": true
+  }
+}

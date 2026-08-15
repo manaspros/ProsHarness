@@ -9,4 +9,6 @@ export { independentAssessment, critiqueObjections } from "./critique.js";
 export type { DebateResult, RunDebateOptions } from "./debate.js";
 export { runDebate, DEBATE_ROUND_CAP, PER_RUN_TOKEN_CEILING } from "./debate.js";
 export type { PlanPipelineOptions, PlanPipelineResult } from "./pipeline.js";
-export { runPlanPipeline } from "./pipeline.js";
+export { runPlanPipeline, writeFileAtomic } from "./pipeline.js";
+export type { EditPlanDocumentOptions } from "./gate1.js";
+export { editPlanDocument } from "./gate1.js";

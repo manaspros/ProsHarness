@@ -107,6 +107,8 @@ interface PlanState {
   structuredJson: string;
   state: string;
   unresolvedObjectionsJson: string | null;
+  editedAt: string | null;
+  editedBy: string | null;
 }
 
 export async function rebuildIndex(dbPath: string, runsRoot: string): Promise<RebuildReport> {
@@ -148,8 +150,8 @@ export async function rebuildIndex(dbPath: string, runsRoot: string): Promise<Re
      VALUES (@planId, @runId, @round, @author, @severity, @claim, @suggestedChange, @resolution)`,
   );
   const insertPlan = db.prepare(
-    `INSERT OR IGNORE INTO plans (run_id, plan_id, version, markdown, structured_json, state, unresolved_objections_json)
-     VALUES (@runId, @planId, @version, @markdown, @structuredJson, @state, @unresolvedObjectionsJson)`,
+    `INSERT OR IGNORE INTO plans (run_id, plan_id, version, markdown, structured_json, state, unresolved_objections_json, edited_at, edited_by)
+     VALUES (@runId, @planId, @version, @markdown, @structuredJson, @state, @unresolvedObjectionsJson, @editedAt, @editedBy)`,
   );
   const insertWorktree = db.prepare(
     `INSERT OR IGNORE INTO worktrees (run_id, allocation_id, repo_root, worktree_path, branch, base_sha, fence_epoch, state, reason)
@@ -185,6 +187,8 @@ export async function rebuildIndex(dbPath: string, runsRoot: string): Promise<Re
               structuredJson: entry.structuredJson,
               state: "drafted",
               unresolvedObjectionsJson: null,
+              editedAt: null,
+              editedBy: null,
             });
             break;
           }
@@ -196,6 +200,8 @@ export async function rebuildIndex(dbPath: string, runsRoot: string): Promise<Re
               structuredJson: entry.structuredJson,
               state: "revised",
               unresolvedObjectionsJson: null,
+              editedAt: null,
+              editedBy: null,
             });
             break;
           }
@@ -215,6 +221,32 @@ export async function rebuildIndex(dbPath: string, runsRoot: string): Promise<Re
                 structuredJson: "{}",
                 state: "finalized",
                 unresolvedObjectionsJson: entry.unresolvedObjectionsJson,
+                editedAt: null,
+                editedBy: null,
+              });
+            }
+            break;
+          }
+          case "plan_edited": {
+            const existing = plans.get(entry.version);
+            if (existing) {
+              existing.markdown = entry.markdown;
+              existing.editedAt = entry.ts;
+              existing.editedBy = entry.editedBy;
+            } else {
+              // Out-of-order journal, same defensive pattern as
+              // plan_finalized above: an edit referenced a version we never
+              // saw drafted/revised. Record what we have rather than
+              // silently drop it.
+              plans.set(entry.version, {
+                version: entry.version,
+                planId: entry.planId,
+                markdown: entry.markdown,
+                structuredJson: "{}",
+                state: "edited",
+                unresolvedObjectionsJson: null,
+                editedAt: entry.ts,
+                editedBy: entry.editedBy,
               });
             }
             break;
@@ -330,6 +362,8 @@ export async function rebuildIndex(dbPath: string, runsRoot: string): Promise<Re
           structuredJson: plan.structuredJson,
           state: plan.state,
           unresolvedObjectionsJson: plan.unresolvedObjectionsJson,
+          editedAt: plan.editedAt,
+          editedBy: plan.editedBy,
         });
         report.plansInserted++;
       }

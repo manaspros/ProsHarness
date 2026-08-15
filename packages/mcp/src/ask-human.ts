@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { Barrier } from "@pros/barrier";
+import { registerSubmitPlanTool } from "./submit-plan.js";
 
 /**
  * The `ask_human` MCP tool.
@@ -82,6 +83,12 @@ export function askHuman(barrier: Barrier, attemptId: string, input: AskHumanInp
   // successful tool result reaches the model.
 }
 
+/**
+ * Builds the single `pros` MCP server process/instance exposing BOTH
+ * `ask_human` and `submit_plan`, sharing one Barrier and one attemptId. Kept
+ * under the original name (`createAskHumanServer`) so nothing that already
+ * references it breaks -- see also the `createProsMcpServer` alias below.
+ */
 export async function createAskHumanServer(barrier: Barrier, attemptId: string): Promise<McpServer> {
   const server = new McpServer({ name: "pros-mcp", version: "0.0.0" });
 
@@ -102,8 +109,13 @@ export async function createAskHumanServer(barrier: Barrier, attemptId: string):
     ({ prompt, options, idempotencyKey }) => askHuman(barrier, attemptId, { prompt, options, idempotencyKey }),
   );
 
+  registerSubmitPlanTool(server, barrier, attemptId);
+
   return server;
 }
+
+/** Alias -- the name describes what this now is (one server, multiple gate tools) better than the original. */
+export const createProsMcpServer = createAskHumanServer;
 
 async function main(): Promise<void> {
   const { runDir, runId, attemptId } = readAskHumanEnv();
