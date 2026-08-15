@@ -1,4 +1,5 @@
-import { sendNtfy } from "./ntfy.js";
+import { resolveDefaultSend, type SendFn } from "./transport.js";
+import type { SlackMcpSession } from "./slack-mcp.js";
 
 /**
  * Mirrors the info payload `Barrier.onParked` fires with (see
@@ -30,34 +31,67 @@ export interface ParkedNotifierSource {
 }
 
 export interface WireNtfyOptions {
+  /** ntfy URL. If set (or PROS_NTFY_URL is set in the environment), ntfy is used as the transport -- unchanged since M3. */
   url?: string;
-  /** Called with each sendNtfy result, for logging/testing -- optional, never required. */
+  /**
+   * Slack channel/user override, used only when ntfy is NOT configured
+   * (i.e. the Slack-MCP fallback transport is in effect). If unset, the
+   * fallback DMs the currently authenticated Slack user themselves --
+   * never a shared/public channel by default. See PROS_SLACK_NOTIFY_TARGET.
+   */
+  slackTarget?: string;
+  /** Test-only seam: inject a fake Slack session so tests exercise the Slack-MCP fallback path without a real Slack/claude call. */
+  slackSession?: SlackMcpSession;
+  /** Bounded timeout passed through to the Slack-MCP fallback transport. */
+  slackTimeoutMs?: number;
+  /**
+   * Full transport override -- if set, bypasses url/slack* resolution
+   * entirely and this exact function is called for every park. Primarily
+   * for tests; production callers should prefer `url`/`slackTarget`.
+   */
+  send?: SendFn;
+  /** Defaults to process.env; injectable for tests. */
+  env?: NodeJS.ProcessEnv;
+  /** Called with each send result, for logging/testing -- optional, never required. */
   onResult?: (info: ParkedNotificationInfo, result: { ok: boolean; error?: string }) => void;
 }
 
 /**
- * Subscribes to a Barrier-like source's onParked hook and fires an ntfy push
- * for every parked checkpoint (both ask_human "Questions" and submit_plan
- * "Gate 1 plan approval" parks get a human-readable notification). Returns
+ * Subscribes to a Barrier-like source's onParked hook and fires a
+ * notification push for every parked checkpoint (both ask_human
+ * "Questions" and submit_plan "Gate 1 plan approval" parks get a
+ * human-readable notification). The transport is resolved once, via
+ * `resolveDefaultSend` (see transport.ts): ntfy when `url`/PROS_NTFY_URL is
+ * configured (unchanged since M3), otherwise Slack via the connected Slack
+ * MCP server -- PROS_NTFY_URL is no longer a required setup step. Returns
  * an unsubscribe function, mirroring onParked's own contract.
  *
  * Critical property, proven by the tests in test/wire-barrier.test.ts: no
- * matter what sendNtfy does (succeeds, fails, times out), it NEVER becomes
- * something the caller of onParked's underlying park sequence has to wait
- * on or handle. This function's callback body dispatches an async
- * operation it does NOT await into the park sequence -- Barrier.onParked
- * already fires listeners via a microtask + try/catch, so this function
- * does not need to duplicate that defense, but it must still never let a
- * rejected promise become unhandled (hence the unconditional `.catch`
- * below, belt-and-braces on top of sendNtfy's own promise-that-never-
- * rejects contract).
+ * matter what the resolved transport does (succeeds, fails, times out), it
+ * NEVER becomes something the caller of onParked's underlying park
+ * sequence has to wait on or handle. This function's callback body
+ * dispatches an async operation it does NOT await into the park sequence
+ * -- Barrier.onParked already fires listeners via a microtask + try/catch,
+ * so this function does not need to duplicate that defense, but it must
+ * still never let a rejected promise become unhandled (hence the
+ * unconditional `.catch` below, belt-and-braces on top of both transports'
+ * own promise-that-never-rejects contract).
  */
 export function wireNtfyNotifications(source: ParkedNotifierSource, opts: WireNtfyOptions = {}): () => void {
+  const send =
+    opts.send ??
+    resolveDefaultSend({
+      url: opts.url,
+      slackTarget: opts.slackTarget,
+      slackSession: opts.slackSession,
+      slackTimeoutMs: opts.slackTimeoutMs,
+      env: opts.env,
+    });
   return source.onParked((info) => {
     const message = buildMessage(info);
-    sendNtfy({ url: opts.url, title: gateTitle(info), message })
+    send({ title: gateTitle(info), message })
       .then((result) => opts.onResult?.(info, result))
-      .catch(() => undefined); // belt-and-braces -- sendNtfy itself never throws, but never trust that from the calling side either
+      .catch(() => undefined); // belt-and-braces -- neither transport should ever throw, but never trust that from the calling side either
   });
 }
 

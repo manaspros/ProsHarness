@@ -57,6 +57,8 @@ export interface RealAdmitOptions {
   /** Fed into a fresh `TokenCeiling` for this run. */
   maxTokensPerRun: number;
   ntfyUrl?: string;
+  /** Passed straight through to `runPlanPipeline({ slackTarget })` -- see that option's doc comment in @pros/plan. */
+  slackTarget?: string;
 }
 
 export function createRealOnNewSignal(
@@ -76,6 +78,7 @@ export function createRealOnNewSignal(
       claudeSession,
       codexSession,
       ntfyUrl: opts.ntfyUrl,
+      slackTarget: opts.slackTarget,
     });
   };
 }

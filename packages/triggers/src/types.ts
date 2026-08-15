@@ -41,10 +41,16 @@ export interface Signal {
 export interface TriggerSource {
   readonly id: string;
   /**
-   * Must never throw for "expected" unavailability (missing config) --
-   * return [] in that case. May throw for genuine bugs (e.g. malformed
-   * fixture JSON), which the runner catches and records as a source failure
-   * without affecting other sources.
+   * Must never throw for "expected" unavailability of a source with no
+   * fixture/config at all reachable (the historical case). May throw for
+   * genuine bugs (e.g. malformed fixture JSON) OR for a source whose
+   * MCP-first path (see src/sources/{linear,slack,granola}.ts) is
+   * unavailable/times out with no API-key fallback configured -- that
+   * failure is deliberately observable, not a silent [], since an
+   * unattended daemon's MCP server disconnecting mid-run must be
+   * distinguishable from "nothing new to report." The runner catches any
+   * throw and records it as a source failure without affecting other
+   * sources.
    */
   fetchSignals(): Promise<Signal[]>;
 }

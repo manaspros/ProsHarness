@@ -4,7 +4,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ConcurrencyLease } from "@pros/lease";
+import type { ModelSession, ModelRunOptions, ModelRunResult } from "@pros/plan";
 import { runTriggerCycle } from "../src/runner.js";
+import { LinearSource } from "../src/sources/linear.js";
 import type { Signal, TriggerSource } from "../src/types.js";
 
 function makeSignal(overrides: Partial<Signal> = {}): Signal {
@@ -123,6 +125,43 @@ test("graceful degradation: one source throws, others' signals still admitted, f
     assert.equal(result.sourceFailures[0].sourceId, "broken-source");
     assert.match(result.sourceFailures[0].error, /malformed fixture/);
     assert.equal(admitted.length, 2);
+  } finally {
+    await rm(dedupDir, { recursive: true, force: true });
+    await rm(leaseDir, { recursive: true, force: true });
+  }
+});
+
+test("graceful degradation: an MCP-unavailable real LinearSource (no fallback) fails observably without affecting a healthy sibling source", async () => {
+  const { dedupDir, leaseDir } = await makeDirs();
+  try {
+    class FailingMcpSession implements ModelSession {
+      readonly provider = "claude" as const;
+      async run(_opts: ModelRunOptions): Promise<ModelRunResult> {
+        throw new Error("Linear MCP server not connected");
+      }
+    }
+
+    const healthySignal = makeSignal({ sourceId: "healthy-a", externalId: "h1" });
+    const admitted: string[] = [];
+    const onNewSignal = async (_s: Signal, ctx: { runId: string }) => {
+      admitted.push(ctx.runId);
+    };
+
+    // No fixturePath, no apiUrl/apiKey fallback -- fetchSignals() must
+    // throw (not return []), and runTriggerCycle must catch it into
+    // sourceFailures without losing the healthy source's signal.
+    const sources: TriggerSource[] = [
+      new FixedSource("healthy-a", [healthySignal]),
+      new LinearSource({ mcpSession: new FailingMcpSession() }),
+    ];
+
+    const result = await runTriggerCycle({ sources, dedupDir, leaseDir, maxConcurrent: 5, onNewSignal });
+
+    assert.equal(result.admittedRunIds.length, 1);
+    assert.equal(result.sourceFailures.length, 1);
+    assert.equal(result.sourceFailures[0].sourceId, "linear");
+    assert.match(result.sourceFailures[0].error, /MCP path unavailable/);
+    assert.equal(admitted.length, 1);
   } finally {
     await rm(dedupDir, { recursive: true, force: true });
     await rm(leaseDir, { recursive: true, force: true });

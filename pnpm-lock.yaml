@@ -7,6 +7,19 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@pros/barrier':
+        specifier: workspace:*
+        version: link:packages/barrier
+      '@pros/implement':
+        specifier: workspace:*
+        version: link:packages/implement
+      '@pros/index':
+        specifier: workspace:*
+        version: link:packages/index
+      '@pros/plan':
+        specifier: workspace:*
+        version: link:packages/plan
     devDependencies:
       '@types/node':
         specifier: ^22.20.1
@@ -266,6 +279,10 @@ importers:
         version: 4.23.12
 
   packages/notify:
+    dependencies:
+      '@pros/adapters':
+        specifier: workspace:*
+        version: link:../adapters
     devDependencies:
       '@pros/barrier':
         specifier: workspace:*

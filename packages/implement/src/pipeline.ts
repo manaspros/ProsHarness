@@ -110,6 +110,15 @@ export interface Gate2PipelineOptions {
   tokenCeiling?: TokenCeiling;
   ntfyUrl?: string;
   /**
+   * Passed straight through to `wireNtfyNotifications({ slackTarget })`.
+   * Only relevant when `ntfyUrl`/PROS_NTFY_URL is NOT set -- in that case
+   * the notifier falls back to a Slack DM via the connected Slack MCP
+   * server, and this optionally redirects it to a specific channel/user
+   * instead of the default "DM yourself". If undefined, the fallback reads
+   * process.env.PROS_SLACK_NOTIFY_TARGET, mirroring ntfyUrl's own fallback.
+   */
+  slackTarget?: string;
+  /**
    * If true, remove the local worktree directory (`git worktree remove
    * --force` + `git worktree prune`) once Gate 2 successfully parks --
    * safe at that point because the branch is already pushed and a PR now
@@ -346,7 +355,7 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
     let checkpointId: string;
     let questionId: string;
     try {
-      const unsubscribe = wireNtfyNotifications(barrier, { url: opts.ntfyUrl });
+      const unsubscribe = wireNtfyNotifications(barrier, { url: opts.ntfyUrl, slackTarget: opts.slackTarget });
       try {
         const freshQuestionId = randomUUID();
         const gate2IdempotencyKey = `gate2-${opts.runId}`;

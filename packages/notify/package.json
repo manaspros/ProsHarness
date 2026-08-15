@@ -12,7 +12,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test test/*.test.ts"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@pros/adapters": "workspace:*"
+  },
   "devDependencies": {
     "@pros/barrier": "workspace:*",
     "@types/node": "^22.10.0",

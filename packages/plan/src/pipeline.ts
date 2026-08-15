@@ -24,6 +24,15 @@ export interface PlanPipelineOptions {
    * -- the fallback lives there, not here, so this stays a thin pass-through.
    */
   ntfyUrl?: string;
+  /**
+   * Passed straight through to `wireNtfyNotifications({ slackTarget })`.
+   * Only relevant when `ntfyUrl`/PROS_NTFY_URL is NOT set -- in that case
+   * the notifier falls back to a Slack DM via the connected Slack MCP
+   * server, and this optionally redirects it to a specific channel/user
+   * instead of the default "DM yourself". If undefined, the fallback reads
+   * process.env.PROS_SLACK_NOTIFY_TARGET, mirroring ntfyUrl's own fallback.
+   */
+  slackTarget?: string;
 }
 
 export interface PlanPipelineResult {
@@ -133,7 +142,7 @@ export async function runPlanPipeline(opts: PlanPipelineOptions): Promise<PlanPi
     // can never delay or block parkForGate1 below -- proven in
     // packages/notify/test/barrier-integration.test.ts and re-proven against
     // the real pipeline in gate1-e2e.test.ts.
-    const unsubscribe = wireNtfyNotifications(barrier, { url: opts.ntfyUrl });
+    const unsubscribe = wireNtfyNotifications(barrier, { url: opts.ntfyUrl, slackTarget: opts.slackTarget });
     try {
       const unresolvedCount = debate.unresolvedObjections.length;
       const totalCount = debate.allObjections.length;

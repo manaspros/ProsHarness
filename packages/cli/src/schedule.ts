@@ -73,21 +73,33 @@ export function resolveScheduleDirs(env: NodeJS.ProcessEnv = process.env, repoRo
   };
 }
 
+/**
+ * `PROS_MCP_TIMEOUT_MS` (optional): shared timeout for each source's
+ * MCP-first path (see src/sources/{linear,slack,granola}.ts) before it
+ * falls back to an API-key path (if configured) or throws an observable
+ * source failure. Defaults to each source's own 20000ms default when unset
+ * -- not required for normal operation, only for tuning how quickly an
+ * unattended cron-fired sweep gives up on a disconnected MCP server.
+ */
 function buildSources(env: NodeJS.ProcessEnv, repoRoot: string): TriggerSource[] {
+  const mcpTimeoutMs = env.PROS_MCP_TIMEOUT_MS ? Number(env.PROS_MCP_TIMEOUT_MS) : undefined;
   return [
     new LinearSource({
       fixturePath: env.PROS_LINEAR_FIXTURE,
       apiUrl: env.PROS_LINEAR_API_URL,
       apiKey: env.PROS_LINEAR_API_KEY,
+      mcpTimeoutMs,
     }),
     new SlackSource({
       fixturePath: env.PROS_SLACK_FIXTURE,
       botToken: env.PROS_SLACK_BOT_TOKEN,
       channel: env.PROS_SLACK_CHANNEL,
+      mcpTimeoutMs,
     }),
     new GranolaSource({
       fixturePath: env.PROS_GRANOLA_FIXTURE,
       apiKey: env.PROS_GRANOLA_API_KEY,
+      mcpTimeoutMs,
     }),
     new SweepSource({ repoRoot }),
   ];

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { Server, IncomingMessage } from "node:http";
 import { wireNtfyNotifications, type ParkedNotificationInfo } from "../src/wire-barrier.js";
+import type { SlackMcpSession } from "../src/slack-mcp.js";
 
 /** A tiny fake mirroring Barrier.onParked's shape, without any real Barrier/journal/guardian. */
 class FakeParkedSource {
@@ -114,6 +115,81 @@ test("wireNtfyNotifications: success path against a real server, sensible messag
     assert.notEqual(askMsg!.title, planMsg!.title);
   } finally {
     await close();
+  }
+});
+
+test("wireNtfyNotifications: no url/PROS_NTFY_URL configured -> falls back to the Slack-MCP transport instead of a silent no-op", async () => {
+  const previous = process.env.PROS_NTFY_URL;
+  delete process.env.PROS_NTFY_URL;
+  try {
+    const source = new FakeParkedSource();
+    let seenPrompt = "";
+    const fakeSlackSession: SlackMcpSession = {
+      run: async (opts) => {
+        seenPrompt = opts.prompt;
+        return { text: "sent" };
+      },
+    };
+    let result: { ok: boolean; error?: string } | undefined;
+    wireNtfyNotifications(source, {
+      // url deliberately omitted, and PROS_NTFY_URL is deleted above.
+      slackSession: fakeSlackSession,
+      onResult: (_info, r) => {
+        result = r;
+      },
+    });
+
+    source.fire({
+      runId: "run-slack-1",
+      checkpointId: "cp-slack-1",
+      questionId: "q-slack-1",
+      gateType: "ask_human",
+      prompt: "Should we proceed with the Slack fallback?",
+    });
+
+    await waitFor(() => result !== undefined, 3000);
+    assert.equal(result?.ok, true);
+    assert.match(seenPrompt, /direct message to yourself/i);
+    assert.match(seenPrompt, /Slack fallback/);
+  } finally {
+    if (previous !== undefined) process.env.PROS_NTFY_URL = previous;
+  }
+});
+
+test("wireNtfyNotifications: Slack-MCP fallback failing does not wedge fire() and is observable via onResult", async () => {
+  const previous = process.env.PROS_NTFY_URL;
+  delete process.env.PROS_NTFY_URL;
+  try {
+    const source = new FakeParkedSource();
+    const fakeSlackSession: SlackMcpSession = {
+      run: async () => {
+        throw new Error("MCP server disconnected");
+      },
+    };
+    let result: { ok: boolean; error?: string } | undefined;
+    wireNtfyNotifications(source, {
+      slackSession: fakeSlackSession,
+      onResult: (_info, r) => {
+        result = r;
+      },
+    });
+
+    const start = Date.now();
+    source.fire({
+      runId: "run-slack-2",
+      checkpointId: "cp-slack-2",
+      questionId: "q-slack-2",
+      gateType: "ask_human",
+      prompt: "continue?",
+    });
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed < 50, `fire() must return near-instantly; took ${elapsed}ms`);
+
+    await waitFor(() => result !== undefined, 3000);
+    assert.equal(result?.ok, false);
+    assert.match(result?.error ?? "", /disconnected/);
+  } finally {
+    if (previous !== undefined) process.env.PROS_NTFY_URL = previous;
   }
 });
 
