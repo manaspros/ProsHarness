@@ -13,6 +13,7 @@ Read in this order:
 | [`04-m1-implementation-log.md`](04-m1-implementation-log.md) | M1 complete: the checkpoint barrier -- guardian/cgroup containment, durable journal, manifest, fenced resume, `ask_human` MCP, `pros answer` CLI. |
 | [`05-m2-implementation-log.md`](05-m2-implementation-log.md) | M2 complete: `pros plan` -- adapters, rebuildable SQLite index, worktree allocator saga, plan/critique/debate pipeline. |
 | [`06-m3-implementation-log.md`](06-m3-implementation-log.md) | M3: Gate 1 -- `submit_plan`, the `ExitPlanMode` hook, the dashboard, ntfy push. |
+| [`07-m4-implementation-log.md`](07-m4-implementation-log.md) | M4 complete: Gate 2 -- Sonnet `scoped-fixer` implementation, background-session verification (verdict only), Codex+`claude ultrareview` adversarial review (a skill), draft PR via `gh` with a real merge-blocking credential boundary, concurrency lease + token ceilings, `pros reconcile`. |
 
 ## The three facts the whole design rests on
 

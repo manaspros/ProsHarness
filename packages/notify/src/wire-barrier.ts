@@ -12,9 +12,11 @@ export interface ParkedNotificationInfo {
   runId: string;
   checkpointId: string;
   questionId: string;
-  gateType: "ask_human" | "plan_approval";
+  gateType: "ask_human" | "plan_approval" | "pr_review";
   prompt: string;
   planRef?: { planId: string; version: number };
+  /** Present only when gateType is "pr_review" (M4 Gate 2). */
+  prRef?: { url: string; number: number; headSha: string };
 }
 
 /**
@@ -60,9 +62,9 @@ export function wireNtfyNotifications(source: ParkedNotifierSource, opts: WireNt
 }
 
 function gateTitle(info: ParkedNotificationInfo): string {
-  return info.gateType === "plan_approval"
-    ? "ProsHarness: plan awaiting Gate 1 approval"
-    : "ProsHarness: question awaiting your answer";
+  if (info.gateType === "plan_approval") return "ProsHarness: plan awaiting Gate 1 approval";
+  if (info.gateType === "pr_review") return "ProsHarness: draft PR awaiting Gate 2 review";
+  return "ProsHarness: question awaiting your answer";
 }
 
 const MAX_PROMPT_LEN = 200;
@@ -75,6 +77,9 @@ function buildMessage(info: ParkedNotificationInfo): string {
   const shortRun = info.runId.slice(0, 12);
   if (info.gateType === "plan_approval" && info.planRef) {
     return `Run ${shortRun}: plan ${info.planRef.planId} v${info.planRef.version} is awaiting Gate 1 approval.`;
+  }
+  if (info.gateType === "pr_review" && info.prRef) {
+    return `Run ${shortRun}: draft PR #${info.prRef.number} (${info.prRef.url}) is awaiting Gate 2 review.`;
   }
   const prompt =
     info.prompt.length > MAX_PROMPT_LEN ? info.prompt.slice(0, MAX_PROMPT_LEN) + "…" : info.prompt;

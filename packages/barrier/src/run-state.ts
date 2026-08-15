@@ -29,9 +29,11 @@ export interface CheckpointRecord {
   effect?: string;
   manifestPath?: string;
   /** Which human gate this is. Defaults to "ask_human" for entries written before this field existed. */
-  gateType?: "ask_human" | "plan_approval";
+  gateType?: "ask_human" | "plan_approval" | "pr_review";
   /** Present only when gateType is "plan_approval". */
   planRef?: { planId: string; version: number };
+  /** Present only when gateType is "pr_review" (M4 Gate 2). */
+  prRef?: { url: string; number: number; headSha: string };
 }
 
 export interface RunState {
@@ -94,6 +96,7 @@ export function projectRunState(entries: JournalEntry[]): RunState {
             // entries written before gateType existed.
             gateType: e.gateType ?? "ask_human",
             planRef: e.planRef,
+            prRef: e.prRef,
           });
         }
         break;

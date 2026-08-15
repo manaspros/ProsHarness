@@ -23,18 +23,21 @@ export interface CheckpointRequest {
   prompt: string;
   options: string[];
   /** Which human gate this is. Defaults to "ask_human" if not given, so existing ask-human.ts call sites need zero changes. */
-  gateType?: "ask_human" | "plan_approval";
+  gateType?: "ask_human" | "plan_approval" | "pr_review";
   /** Present only when gateType is "plan_approval". */
   planRef?: { planId: string; version: number };
+  /** Present only when gateType is "pr_review". */
+  prRef?: { url: string; number: number; headSha: string };
 }
 
 type ParkedListener = (info: {
   runId: string;
   checkpointId: string;
   questionId: string;
-  gateType: "ask_human" | "plan_approval";
+  gateType: "ask_human" | "plan_approval" | "pr_review";
   prompt: string;
   planRef?: { planId: string; version: number };
+  prRef?: { url: string; number: number; headSha: string };
 }) => void;
 
 /**
@@ -508,6 +511,88 @@ export class Barrier {
       gateType: "plan_approval",
       prompt: opts.prompt,
       planRef: opts.planRef,
+    });
+
+    this.state = await loadRunState(this.runDir);
+    return { checkpointId };
+  }
+
+  /**
+   * Parks a run for Gate 2 (M4 human review of a draft PR) -- structurally
+   * identical to `parkForGate1` (no live attempt/guardian to freeze by the
+   * time a draft PR exists; implementation/verification/review were one-shot
+   * ModelSession/CLI calls), just with `gateType: "pr_review"` and a
+   * `prRef` instead of a `planRef`. Idempotent on `idempotencyKey`.
+   */
+  async parkForGate2(opts: {
+    cwd: string;
+    prompt: string;
+    options: string[];
+    questionId: string;
+    idempotencyKey: string;
+    prRef: { url: string; number: number; headSha: string };
+  }): Promise<{ checkpointId: string }> {
+    const existing = this.state.idempotencyIndex.get(opts.idempotencyKey);
+    if (existing) {
+      return { checkpointId: existing };
+    }
+
+    const checkpointId = randomUUID();
+    const attemptId = "gate2-pipeline"; // synthetic: no live attempt/guardian backs a PR-review gate
+
+    await this.journal.append({
+      runId: this.runId,
+      fenceEpoch: this.fence.current(),
+      kind: "checkpoint_requested",
+      checkpointId,
+      attemptId,
+      questionId: opts.questionId,
+      idempotencyKey: opts.idempotencyKey,
+      prompt: opts.prompt,
+      options: opts.options,
+      gateType: "pr_review",
+      prRef: opts.prRef,
+    });
+
+    await this.journal.append({
+      runId: this.runId,
+      fenceEpoch: this.fence.current(),
+      kind: "quiescing",
+      checkpointId,
+      attemptId,
+    });
+
+    const baseSha = await computeHeadSha(opts.cwd);
+    const manifest = await snapshotManifest(this.runDir, {
+      runId: this.runId,
+      cwd: opts.cwd,
+      baseSha,
+      fenceEpoch: this.fence.current(),
+      launchConfig: {
+        provider: "fixture",
+        command: "",
+        args: [],
+        cwd: opts.cwd,
+      },
+    });
+
+    await this.journal.append({
+      runId: this.runId,
+      fenceEpoch: this.fence.current(),
+      kind: "parked",
+      checkpointId,
+      attemptId,
+      manifestPath: path.join(this.runDir, "manifest.json"),
+      workingStateHash: manifest.workingStateHash,
+    });
+
+    this.fireParked({
+      runId: this.runId,
+      checkpointId,
+      questionId: opts.questionId,
+      gateType: "pr_review",
+      prompt: opts.prompt,
+      prRef: opts.prRef,
     });
 
     this.state = await loadRunState(this.runDir);

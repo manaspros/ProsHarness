@@ -51,9 +51,11 @@ export type JournalEntry = JournalEntryBase &
         prompt: string;
         options: string[];
         /** Which human gate this is. Defaults to "ask_human" when absent (old journal entries, and plain ask_human calls). */
-        gateType?: "ask_human" | "plan_approval";
+        gateType?: "ask_human" | "plan_approval" | "pr_review";
         /** Present only when gateType is "plan_approval": which plan version this approval gate concerns. */
         planRef?: { planId: string; version: number };
+        /** Present only when gateType is "pr_review" (M4 Gate 2): which draft PR this review gate concerns. */
+        prRef?: { url: string; number: number; headSha: string };
       }
     | { kind: "quiescing"; checkpointId: string; attemptId: string }
     | {

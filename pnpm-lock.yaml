@@ -30,6 +30,18 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
+  packages/agents:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.12
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
   packages/barrier:
     devDependencies:
       '@types/node':
@@ -47,9 +59,18 @@ importers:
       '@pros/barrier':
         specifier: workspace:*
         version: link:../barrier
+      '@pros/implement':
+        specifier: workspace:*
+        version: link:../implement
+      '@pros/lease':
+        specifier: workspace:*
+        version: link:../lease
       '@pros/plan':
         specifier: workspace:*
         version: link:../plan
+      '@pros/worktree':
+        specifier: workspace:*
+        version: link:../worktree
     devDependencies:
       '@types/node':
         specifier: ^22.10.0
@@ -104,6 +125,37 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
+  packages/implement:
+    dependencies:
+      '@pros/agents':
+        specifier: workspace:*
+        version: link:../agents
+      '@pros/barrier':
+        specifier: workspace:*
+        version: link:../barrier
+      '@pros/lease':
+        specifier: workspace:*
+        version: link:../lease
+      '@pros/notify':
+        specifier: workspace:*
+        version: link:../notify
+      '@pros/plan':
+        specifier: workspace:*
+        version: link:../plan
+    devDependencies:
+      '@pros/worktree':
+        specifier: workspace:*
+        version: link:../worktree
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.12
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
   packages/index:
     dependencies:
       '@pros/barrier':
@@ -116,6 +168,18 @@ importers:
       '@types/better-sqlite3':
         specifier: ^7.6.13
         version: 7.6.13
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.12
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
+  packages/lease:
+    devDependencies:
       '@types/node':
         specifier: ^22.10.0
         version: 22.20.1
