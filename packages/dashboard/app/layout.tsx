@@ -80,6 +80,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <nav>
           <a href="/runs">Runs</a>
           <a href="/loops">Loops</a>
+          <a href="/schedule">Schedule</a>
+          <a href="/skills">Skills</a>
         </nav>
         <main>{children}</main>
       </body>

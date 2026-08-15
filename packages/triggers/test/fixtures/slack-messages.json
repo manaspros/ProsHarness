@@ -1,0 +1,16 @@
+[
+  {
+    "ts": "1755000000",
+    "channel": "eng-bugs",
+    "user": "alice",
+    "text": "hey the worktree allocator seems to leave a stale lock dir sometimes, can we look?",
+    "permalink": "https://example.slack.com/archives/C01/p1755000000"
+  },
+  {
+    "ts": "1755003600",
+    "channel": "eng-bugs",
+    "user": "bob",
+    "text": "reconcile command doesn't print orphaned branches, only worktrees",
+    "permalink": "https://example.slack.com/archives/C01/p1755003600"
+  }
+]

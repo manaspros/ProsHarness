@@ -1,0 +1,20 @@
+[
+  {
+    "id": "lin_001",
+    "identifier": "ENG-101",
+    "title": "Dashboard chart flickers on refresh",
+    "description": "Repro: open the dashboard, wait for a poll tick. The chart re-renders from empty state.",
+    "url": "https://linear.app/example/issue/ENG-101",
+    "updatedAt": "2026-08-10T12:00:00.000Z",
+    "labels": ["bug", "dashboard"]
+  },
+  {
+    "id": "lin_002",
+    "identifier": "ENG-102",
+    "title": "Add retry to ntfy notification send",
+    "description": "A transient network blip currently drops the notification silently.",
+    "url": "https://linear.app/example/issue/ENG-102",
+    "updatedAt": "2026-08-11T09:30:00.000Z",
+    "labels": ["enhancement"]
+  }
+]

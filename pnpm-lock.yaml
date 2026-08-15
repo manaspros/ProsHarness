@@ -68,6 +68,12 @@ importers:
       '@pros/plan':
         specifier: workspace:*
         version: link:../plan
+      '@pros/schedule':
+        specifier: workspace:*
+        version: link:../schedule
+      '@pros/triggers':
+        specifier: workspace:*
+        version: link:../triggers
       '@pros/worktree':
         specifier: workspace:*
         version: link:../worktree
@@ -314,6 +320,56 @@ importers:
       tsx:
         specifier: ^4.19.0
         version: 4.23.12
+
+  packages/schedule:
+    dependencies:
+      '@pros/skillrank':
+        specifier: workspace:*
+        version: link:../skillrank
+      '@pros/triggers':
+        specifier: workspace:*
+        version: link:../triggers
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.12
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
+  packages/skillrank:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.12
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
+  packages/triggers:
+    dependencies:
+      '@pros/lease':
+        specifier: workspace:*
+        version: link:../lease
+      '@pros/plan':
+        specifier: workspace:*
+        version: link:../plan
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.12
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
 
   packages/worktree:
     dependencies:

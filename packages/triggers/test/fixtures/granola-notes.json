@@ -1,0 +1,23 @@
+[
+  {
+    "id": "gr_001",
+    "title": "Weekly sync",
+    "summary": "Discussed trigger framework scope and lease sharing with Gate 2.",
+    "actionItems": [
+      "Write ADR for token ceiling per unattended run",
+      "Confirm dedup store survives crash mid-claim"
+    ],
+    "createdAt": "2026-08-12T15:00:00.000Z",
+    "url": "https://notes.granola.ai/gr_001"
+  },
+  {
+    "id": "gr_002",
+    "title": "1:1",
+    "summary": "Quick check-in.",
+    "actionItems": [
+      "Follow up on ntfy retry ticket"
+    ],
+    "createdAt": "2026-08-13T10:00:00.000Z",
+    "url": "https://notes.granola.ai/gr_002"
+  }
+]
