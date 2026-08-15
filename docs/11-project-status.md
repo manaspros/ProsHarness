@@ -2,24 +2,31 @@
 
 Written at the close of M7, the final planned milestone, and updated after
 a post-M7 cleanup pass (docs/12-cleanup-log.md) that closed the four
-highest-priority gaps this document used to list first. This is the one
-document meant to answer "what do I actually have, and what do I need to do
-to use it" without reading the other eleven. It is deliberately honest
-about gaps -- nothing here is rounded up.
+highest-priority gaps this document used to list first, and again after the
+zero-token credential-simplification rework (docs/13-zero-token-rework.md).
+This is the one document meant to answer "what do I actually have, and what
+do I need to do to use it" without reading the other twelve. It is
+deliberately honest about gaps -- nothing here is rounded up.
 
-**Bottom line: M1-M7 are all built and tested, plus the cleanup pass below.
-`pnpm -r typecheck` is clean across all 19 packages. `pnpm -r test` is 296
-tests, stable at 294-295 passing / 1-2 skipped across 5 repeated full runs
--- zero test *failures* in any of those runs. The 1-2 skip variance is
-entirely the real-CLI acceptance tests (`@pros/mcp`, `@pros/plan`)
+**Bottom line: M1-M7 are all built and tested, plus the cleanup pass and the
+zero-token rework below. `pnpm -r typecheck` is clean across all 18
+typechecked packages. `pnpm -r test` is 321 tests, 320 passing / 1 skipped
+in the full run at the close of the zero-token rework -- zero test
+*failures*. The skip is the same class of expected variance this project
+has always had: the real-CLI acceptance tests (`@pros/mcp`, `@pros/plan`)
 self-skipping when the live, subscription-authenticated `claude` subprocess
-doesn't respond within its 60s budget -- expected variance in a real
-external call, not a bug (see "Known gaps" and docs/12-cleanup-log.md for
-the full investigation). The previously-reported `@pros/barrier` guardian
-kill-test #2 failure was root-caused and fixed, not merely re-observed --
-see docs/12-cleanup-log.md for the real root cause, which was a genuine
-implementation bug, not an environment flake as earlier milestone logs
-assumed.**
+doesn't respond within its 60s budget -- not a bug (see "Known gaps" and
+docs/12-cleanup-log.md for the full investigation). The previously-reported
+`@pros/barrier` guardian kill-test #2 failure was root-caused and fixed, not
+merely re-observed -- see docs/12-cleanup-log.md for the real root cause,
+which was a genuine implementation bug, not an environment flake as earlier
+milestone logs assumed.**
+
+**As of the zero-token rework (docs/13-zero-token-rework.md): nothing needs
+to be provisioned to run this system end to end.** Every credential
+previously on the must-configure list below is now either eliminated (by
+reusing an MCP server or a `gh auth login` session you already have) or
+demoted to optional hardening, listed separately further down.
 
 ---
 
@@ -136,15 +143,17 @@ not invoke it directly.
 
 ## Everything you must configure
 
+As of the zero-token rework (docs/13-zero-token-rework.md), **no credential
+is required** -- only plain directory locations, which all have sane
+defaults. The one thing worth doing up front for real use is `gh auth
+login` (see below), and that's a session most people already have.
+
 | Env var | Default | Required for | Notes |
 |---|---|---|---|
 | `PROS_RUNS_DIR` | `<HOME>/.pros/runs` | everything | Durable run journals/manifests. |
 | `PROS_WORKTREES_DIR` | `<HOME>/.pros/worktrees` | plan/implement | Where worktrees are allocated. |
 | `PROS_INDEX_DB` | `<HOME>/.pros/index.sqlite` | dashboard | Rebuildable SQLite index over the journal. |
 | `PROS_LEASE_DIR` | `<HOME>/.pros/leases` | Gate 2, ambient triggers | Global concurrency lease, shared by both. |
-| `PROS_NTFY_URL` | unset (notifications silently no-op) | phone push on checkpoint | e.g. `https://ntfy.sh/<your-private-topic>`. **Only** env var notifications need. |
-| `PROS_GH_PR_TOKEN` | unset (PR creation unavailable) | Gate 2 draft PRs | A **fine-grained GitHub PAT**, scoped to exactly one repo: `Pull requests: Read and write`, `Contents: Read-only`, `Metadata: Read-only`. This exact split is the real mechanism that makes "the system cannot merge" true -- see `docs/07-m4-implementation-log.md`'s "the merge boundary." |
-| `PROS_GH_PR_SCOPES` | `pull_requests:write,contents:read,metadata:read` | Gate 2 | Only change this if you understand the merge-boundary argument above; loosening it defeats the point. |
 | `PROS_MINER_OUT` | `<HOME>/.pros/miner` | `/loops` page, skillrank ranking signal | Mined artifacts (corrections, session cards, proposals) -- never committed, already gitignored. |
 | `PROS_CLAUDE_HOME` | `<HOME>/.claude` | `@pros/miner` | Where your real Claude Code history lives -- point this at an extracted backup to replay against old history. |
 | `PROS_SCHEDULE_STATUS_DIR` | `<HOME>/.pros/schedule` | `/schedule` page, `pros schedule status` | Durable per-job status files. |
@@ -153,15 +162,63 @@ not invoke it directly.
 | `PROS_MAX_CONCURRENT` | `3` | ambient trigger sweep | How many unattended runs (Gate 2 + trigger-admitted) may hold a lease slot at once. |
 | `PROS_MAX_TOKENS_PER_RUN` | `200000` | ambient trigger sweep | Per-run token ceiling for trigger-admitted runs. |
 | `PROS_REPO_ROOT` | `process.cwd()` | `pros schedule start`, `SweepSource` | The repo the scheduled sweep operates on. |
-| `PROS_LINEAR_API_URL` + `PROS_LINEAR_API_KEY` | unset (source returns `[]`) | Linear trigger source | See `docs/10-m7-implementation-log.md`'s per-source setup table for the exact scope to grant. |
-| `PROS_SLACK_BOT_TOKEN` + `PROS_SLACK_CHANNEL` | unset (source returns `[]`) | Slack trigger source | `channels:history` + `channels:read` only -- explicitly **not** `chat:write`. |
-| `PROS_GRANOLA_API_KEY` | unset (source returns `[]`) | Granola trigger source | Granola's real API shape is unconfirmed; this is a placeholder until one exists. |
 | `PROS_LINEAR_FIXTURE` / `PROS_SLACK_FIXTURE` / `PROS_GRANOLA_FIXTURE` | unset | dry-running a source without real creds | Point at a fixture-shaped JSON file, see `packages/triggers/test/fixtures/*.json`. |
 
-**None of these are set in this environment right now, by design.** The
-whole system runs correctly with all of them unset except `PROS_RUNS_DIR`
-et al. -- notifications, PR creation, and the three credentialed trigger
-sources all degrade gracefully to "not configured" rather than erroring.
+**One thing worth actually doing, not a credential to provision:** run `gh
+auth login` if you haven't already, so Gate 2 can open draft PRs through
+your own ambient session (see "The GitHub boundary" below). `pros implement`
+and the scheduled continuation job both fail with a clear, actionable
+message (not a confusing `gh` error) if `gh` isn't authenticated when a
+draft PR is about to be opened.
+
+**None of the directory-location env vars above are set in this environment
+right now, by design** -- they all default to sane paths under `<HOME>/.pros`.
+
+### Optional hardening (not required to start; each buys you something specific)
+
+| Env var | What it buys you |
+|---|---|
+| `PROS_GH_PR_TOKEN` (+ `PROS_GH_PR_SCOPES`) | A **fine-grained GitHub PAT**, scoped to exactly one repo (`Pull requests: Read and write`, `Contents: Read-only`, `Metadata: Read-only`), used instead of your ambient `gh auth` session. GitHub's own servers enforce the merge boundary on this token regardless of what this codebase's own source says -- strictly stronger than the zero-token default, which trusts the orchestrator process itself. See "The GitHub boundary" below and `docs/13-zero-token-rework.md` for the full honest tradeoff. |
+| `PROS_LINEAR_API_URL` + `PROS_LINEAR_API_KEY` | Headless reliability for the Linear trigger source: falls back to a direct API call if the interactively-authenticated Linear MCP connection is disconnected (a real, observed failure mode for unattended runs -- see below). Without this set, an MCP-unavailable Linear source now throws a clear, observable error (surfaced in `sourceFailures`/`/schedule`) rather than silently returning `[]`. |
+| `PROS_SLACK_BOT_TOKEN` + `PROS_SLACK_CHANNEL` | Same, for the Slack trigger source. `channels:history` + `channels:read` only -- explicitly **not** `chat:write`. |
+| `PROS_GRANOLA_API_KEY` | Same, for the Granola trigger source. Granola's real API shape is unconfirmed; this remains a placeholder until one exists. |
+| `PROS_NTFY_URL` | An alternative push-notification transport (ntfy), used instead of the default Slack-via-MCP self-DM. e.g. `https://ntfy.sh/<your-private-topic>`. |
+| `PROS_SLACK_NOTIFY_TARGET` | Route the default Slack notifications to a named channel instead of a self-DM. |
+| `PROS_MCP_TIMEOUT_MS` | How long a trigger source waits on an MCP call before falling back/failing (default 20000ms). |
+
+### MCP trigger sources: how they work now, and their real caveat
+
+Linear, Slack, and Granola trigger sources now prefer your already-connected
+`claude.ai` MCP servers (driven through a short-lived `claude -p` call, the
+same subscription-spending mechanism this project uses everywhere) over any
+API key, falling back to the API-key path above only if it's explicitly
+configured. The caveat is real, not theoretical: these are
+interactively-authenticated MCP connections, and they were observed to
+disconnect mid-session during this project's own build. An unattended
+scheduler firing a trigger sweep may find one absent -- when that happens
+with no API-key fallback configured, the source now throws a clear,
+descriptive error (caught and recorded per-source by `runTriggerCycle`,
+never wedging the daemon or affecting a sibling source) instead of silently
+looking like "nothing to report." See `docs/13-zero-token-rework.md` for the
+full design.
+
+### The GitHub boundary, without a token
+
+Draft PRs at Gate 2 now default to using your own `gh auth login` session
+(checked up front; a clear error if you're not logged in) instead of
+requiring `PROS_GH_PR_TOKEN`. The safety property this project has always
+insisted on -- **the agent cannot merge; only you do** -- still holds: the
+model/agent subprocess is given *no* GitHub credential at all (`GH_TOKEN`/
+`GITHUB_TOKEN` stripped, `gh`'s own config directory repointed away from
+your real session, for every model subprocess this project spawns), and the
+orchestrator itself -- deterministic TypeScript, never a model -- has no
+reachable code path to a merge command. The honest difference from the
+scoped-token path: that boundary is enforced by *this code*, not by GitHub's
+servers, so it depends on the orchestrator's own source not having been
+tampered with -- worth thinking about if you ever have ProsHarness modify
+its own source. See `docs/13-zero-token-rework.md`'s "the honest tradeoff"
+for the full argument; if that residual trust boundary isn't acceptable for
+your use, set `PROS_GH_PR_TOKEN`.
 
 **Standing safety fact, unchanged since M0:** the official `claude`/`codex`
 CLIs are driven as subscription-authenticated subprocesses. No
@@ -253,12 +310,13 @@ env | grep -iE 'ANTHROPIC|OPENAI'
 # 2. Full typecheck: must be clean across all 19 packages
 pnpm -r typecheck
 
-# 3. Full test suite: expect 296 tests, 294-295 passing / 1-2 skipped --
-#    the skip-count variance is ONLY the real-CLI acceptance tests
-#    (@pros/mcp, @pros/plan) self-skipping on real subprocess latency (see
-#    "Known gaps" and docs/12-cleanup-log.md); ANY actual failure (not
-#    skip) is a real regression -- investigate immediately, don't assume
-#    it's a known flake without checking which test failed and why.
+# 3. Full test suite: expect 321 tests, 320 passing / 1 skipped (occasionally
+#    2, see below) -- the skip-count variance is ONLY the real-CLI
+#    acceptance tests (@pros/mcp, @pros/plan) self-skipping on real
+#    subprocess latency (see "Known gaps" and docs/12-cleanup-log.md); ANY
+#    actual failure (not skip) is a real regression -- investigate
+#    immediately, don't assume it's a known flake without checking which
+#    test failed and why.
 pnpm -r test    # timeout 300000-600000ms
 
 # 4. Before any claude/codex CLI version bump: replay the recorded
@@ -299,6 +357,7 @@ pnpm -r test    # timeout 300000-600000ms
 | M6 | The learning loop: `@pros/miner` (correction mining, session cards, pr-link-gated clustering, loop proposals), "new to you" in `@pros/review`, the dashboard's `/loops` page. | `09-m6-implementation-log.md` |
 | M7 | Ambient triggers (`@pros/triggers`: Linear, Slack, scheduled sweep, Granola) + skillrank weekly proposals (`@pros/skillrank`) + the scheduler (`@pros/schedule`) + `pros schedule` CLI + `/schedule` and `/skills` dashboard pages. | `10-m7-implementation-log.md` |
 | Cleanup | Root-caused and fixed the `@pros/barrier` guardian kill-test #2 race (a real implementation bug, not a flake). Closed the Gate 1 -> Gate 2 continuation gap (`pros implement`, the scheduled continuation job) and the wrong `PROS_SKILL_LOCK_FILE` default. | `12-cleanup-log.md` |
+| Zero-token rework | MCP-first trigger sources (Linear/Slack/Granola, API-key path kept as headless fallback), Slack-via-MCP notifications (ntfy kept as an alternative transport), and zero-token draft PRs via the ambient `gh auth` session (scoped `PROS_GH_PR_TOKEN` kept as strictly stronger opt-in hardening). Nothing left on the must-configure list is a credential. | `13-zero-token-rework.md` |
 
 M7 was the last planned milestone; the cleanup pass above closed the gaps
 that made the system hardest to actually pick back up and use. There is no
