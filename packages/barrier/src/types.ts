@@ -75,6 +75,30 @@ export type JournalEntry = JournalEntryBase &
     | { kind: "safe_section_enter"; sectionId: string }
     | { kind: "safe_section_exit"; sectionId: string }
     | { kind: "rejected_stale"; attemptedFenceEpoch: number; currentFenceEpoch: number; op: string }
+    // --- M2: worktree allocator saga (intent -> act -> confirm, reconcile rolls back/finishes) ---
+    | { kind: "worktree_intent"; allocationId: string; repoRoot: string; worktreePath: string; branch: string }
+    | { kind: "worktree_allocated"; allocationId: string; baseSha: string; worktreePath: string; branch: string }
+    | { kind: "worktree_confirmed"; allocationId: string }
+    | { kind: "worktree_rollback"; allocationId: string; reason: string }
+    // --- M2: plan pipeline (finding -> plan -> independent critique -> bounded debate) ---
+    | { kind: "finding_recorded"; findingId: string; title: string; evidenceJson: string }
+    | { kind: "plan_drafted"; planId: string; version: number; markdown: string; structuredJson: string }
+    | {
+        kind: "critique_independent";
+        planId: string;
+        round: number;
+        /** Codex's own read of the finding + repo, formed BEFORE it sees Claude's plan. */
+        assessmentJson: string;
+      }
+    | {
+        kind: "critique_objections";
+        planId: string;
+        round: number;
+        objectionsJson: string; // {"objections":[{severity,claim,suggested_change}]}
+      }
+    | { kind: "plan_revised"; planId: string; version: number; markdown: string; structuredJson: string; round: number }
+    | { kind: "debate_capped"; planId: string; roundsRun: number; reason: string }
+    | { kind: "plan_finalized"; planId: string; version: number; unresolvedObjectionsJson: string }
   );
 
 export interface Manifest {
