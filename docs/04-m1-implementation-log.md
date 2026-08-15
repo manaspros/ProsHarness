@@ -175,6 +175,70 @@ once a real `claude` process, in a real MCP subprocess, was actually driven
 end to end. That is exactly the reason the plan calls for the real-CLI
 acceptance test in addition to the fixture, and it earned its keep here.
 
+## Bug #6: `pros answer` flaked ~1-in-6 in isolation - a same-process poller race
+
+Found post-ship, reported as a flaky `packages/cli/test/answer.test.ts`: about
+1-in-6 to 1-in-3 runs of that file *in isolation* (no other test files
+running, so not cross-suite contention) either failed `assert.ok(found)`
+right after `barrier.close()`, or had `runAnswerCommand` throw "no parked
+question found ... it may already be answered, or belong to a different runs
+root" a moment later. Both are the same underlying symptom: the checkpoint
+was still `checkpoint_requested` on disk when something expected it to
+already be `parked`.
+
+**Root cause, with evidence.** Instrumented `Guardian.launch`, `quiesce()`,
+and `Barrier.proceedCheckpoint`/`requestCheckpoint` with timestamped
+`console.error` logging and looped the isolated test file until a failure
+landed. Every captured failure showed the identical, otherwise-impossible
+ordering:
+
+```
+DEBUG proceedCheckpoint: start <checkpointId>       <- proceedCheckpoint has begun
+DEBUG requestCheckpoint: after pollOnce, phase=checkpoint_requested   <- but THIS call's pollOnce() already returned
+DEBUG quiesce: ... procs before freeze/kill = "..."  <- the freeze/kill/wait sequence is still only just starting
+```
+
+`requestCheckpoint()`'s own `await this.pollOnce()` had already resolved
+*before* the `proceedCheckpoint()` it supposedly triggered had even reached
+`guardian.quiesce()`. That is only possible if two different invocations of
+`pollOnce()` were racing: `Barrier.startPoller()` installs a free-running
+20ms `setInterval` that calls `pollOnce()` on its own schedule, completely
+independent of the inline call `requestCheckpoint()` makes "to keep the
+common (same-process) path snappy." Both invocations call
+`loadRunState()` (a real disk read) and then synchronously check
+`this.claimed.has(checkpointId)` before claiming it. Node's fs threadpool
+does not guarantee these `loadRunState()` calls resolve in invocation order,
+so the interval's tick can win the claim race and start the real
+freeze+kill+snapshot+parked sequence, while `requestCheckpoint()`'s own
+call - the one the test is actually `await`ing - sees "already claimed,"
+assumes someone else is on it, and returns immediately having done nothing
+further. Nothing was left waiting on the winner's actual work, so
+`barrier.close()` and the test's fresh disk read could run before that
+work finished. This is a genuine logic race, not systemd/cgroup flakiness:
+every failing run's own `quiesce()` and `waitForEmpty()` succeeded fine,
+just too late for a caller who had already stopped waiting.
+
+**Fix.** Added `Barrier.inFlight: Map<checkpointId, Promise<void>>`,
+populated in the same synchronous stretch as `this.claimed.add(...)` (no
+`await` in between, so there is no window where "claimed" is true but the
+promise isn't recorded yet). Whichever `pollOnce()` invocation does NOT win
+the claim now looks up and awaits that promise before returning, instead of
+treating "already claimed" as "already done." `requestCheckpoint()` also
+re-reads `loadRunState()` after that wait, since a stale concurrent
+`pollOnce()` tick could otherwise have clobbered `this.state` after the real
+work finished. No timeout was touched; no kill-test assertion was weakened.
+
+**Verification.** 50 consecutive isolated runs of
+`node --import tsx --test packages/cli/test/answer.test.ts` after the fix:
+0 failures (vs. 3 failures observed in the 30 runs used to pin down the root
+cause before the fix). Re-ran `pnpm --filter @pros/barrier test` (20/20,
+twice), `pnpm --filter @pros/mcp test` (ask_human unit test passes, the
+real-CLI acceptance test still legitimately skips per its own documented
+60s bound, twice), `pnpm --filter @pros/cli test` (3/3, including the
+unrelated M2 `pros plan` CLI test), `pnpm -r typecheck` (clean), and a full
+`pnpm -r test` from the repo root (all packages green: barrier 20/20, index
+5/5, worktree 6/6, mcp 1/1 + 1 documented skip, plan 10/10, cli 3/3).
+
 ## Known gaps / deliberate scope decisions for M1
 
 - **No standalone daemon process.** `Barrier` currently plays the daemon's

@@ -38,6 +38,23 @@ export class Barrier {
   private unsafeSections = new Set<string>();
   /** checkpointIds this instance has already started (or finished) processing, so the poller never double-quiesces one. */
   private claimed = new Set<string>();
+  /**
+   * checkpointId -> the in-flight `proceedCheckpoint` promise for whichever
+   * `pollOnce()` invocation actually claimed it. `pollOnce()` runs both from
+   * the free-running 20ms timer AND inline from `requestCheckpoint()` (to
+   * keep the same-process path snappy -- see there), so two invocations can
+   * overlap: one's `loadRunState()` resolves and reaches the claim first,
+   * the other sees "already claimed" and would otherwise return immediately
+   * having done nothing. Without this map that second invocation -- which
+   * may be the one a caller (e.g. `requestCheckpoint()`, and transitively
+   * the caller of that) is actually awaiting -- resolves before the freeze
+   * +kill+snapshot+parked sequence the FIRST invocation kicked off has
+   * actually finished, so `barrier.close()` and any fresh disk read right
+   * after can race ahead of it. Recording the promise here lets any loser
+   * of the claim race wait for the real winner's work instead of assuming
+   * "someone else has it" means "it's already done".
+   */
+  private inFlight = new Map<string, Promise<void>>();
   /** checkpointIds this instance has already logged a `checkpoint_deferred` entry for, so re-observing "still unsafe" doesn't spam the journal. */
   private loggedDeferrals = new Set<string>();
   private pollTimer: NodeJS.Timeout | undefined;
@@ -123,7 +140,11 @@ export class Barrier {
         prompt: cp.prompt,
         options: cp.options,
       };
-      await this.proceedCheckpoint(req, cp.checkpointId);
+      const promise = this.proceedCheckpoint(req, cp.checkpointId).finally(() => {
+        this.inFlight.delete(cp.checkpointId);
+      });
+      this.inFlight.set(cp.checkpointId, promise);
+      await promise;
     }
   }
 
@@ -271,6 +292,19 @@ export class Barrier {
     let deferred = false;
     if (this.guardians.has(req.attemptId)) {
       await this.pollOnce();
+      // The free-running 20ms timer's own pollOnce() tick can overlap this
+      // one and win the race to claim this exact checkpoint (its
+      // loadRunState() happened to resolve first) -- in that case OUR
+      // pollOnce() above saw "already claimed" and returned without doing
+      // anything, even though the real freeze+kill+snapshot+parked sequence
+      // is still running in that other invocation. Wait for it here so this
+      // method never returns before the checkpoint has actually reached its
+      // resting phase (parked or still-deferred) -- callers like
+      // `Barrier.close()` right after this must not be able to race ahead
+      // of it.
+      const inFlight = this.inFlight.get(checkpointId);
+      if (inFlight) await inFlight;
+      this.state = await loadRunState(this.runDir);
       deferred = this.state.checkpoints.get(checkpointId)?.phase === "checkpoint_requested";
     }
 
