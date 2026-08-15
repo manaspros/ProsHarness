@@ -1,14 +1,25 @@
 # Project status -- read this first
 
-Written at the close of M7, the final planned milestone. This is the one
+Written at the close of M7, the final planned milestone, and updated after
+a post-M7 cleanup pass (docs/12-cleanup-log.md) that closed the four
+highest-priority gaps this document used to list first. This is the one
 document meant to answer "what do I actually have, and what do I need to do
-to use it" without reading the other ten. It is deliberately honest about
-gaps -- nothing here is rounded up.
+to use it" without reading the other eleven. It is deliberately honest
+about gaps -- nothing here is rounded up.
 
-**Bottom line: M1-M7 are all built and tested. `pnpm -r typecheck` is clean
-across all 19 packages. `pnpm -r test` is 284 tests, 282 passing, 1
-pre-existing environment-sensitive flake in `@pros/barrier` (not a
-regression, see "Known gaps"), 1 pre-existing skip in `@pros/mcp`.**
+**Bottom line: M1-M7 are all built and tested, plus the cleanup pass below.
+`pnpm -r typecheck` is clean across all 19 packages. `pnpm -r test` is 296
+tests, stable at 294-295 passing / 1-2 skipped across 5 repeated full runs
+-- zero test *failures* in any of those runs. The 1-2 skip variance is
+entirely the real-CLI acceptance tests (`@pros/mcp`, `@pros/plan`)
+self-skipping when the live, subscription-authenticated `claude` subprocess
+doesn't respond within its 60s budget -- expected variance in a real
+external call, not a bug (see "Known gaps" and docs/12-cleanup-log.md for
+the full investigation). The previously-reported `@pros/barrier` guardian
+kill-test #2 failure was root-caused and fixed, not merely re-observed --
+see docs/12-cleanup-log.md for the real root cause, which was a genuine
+implementation bug, not an environment flake as earlier milestone logs
+assumed.**
 
 ---
 
@@ -24,10 +35,11 @@ rounds, and writes a plan document plus structured objections. The run then
 amend, or reject it (**Gate 1**), which you do from the dashboard or via
 `pros answer`.
 
-On approval, `pros` (today: `runGate2Pipeline`, not yet wired to a CLI verb
--- see "Known gaps") implements the fix on a Sonnet subagent inside the
-allocated worktree, verifies it in a background session (a verdict comes
-back, never a raw stack trace), runs an adversarial review (Codex +
+On approval, `pros` -- automatically, via a scheduled continuation job
+(`pros schedule start`, polling every 2 minutes), or on demand via
+`pros implement <run-id>` -- implements the fix on a Sonnet subagent inside
+the allocated worktree, verifies it in a background session (a verdict
+comes back, never a raw stack trace), runs an adversarial review (Codex +
 `claude ultrareview`), and opens a **draft PR** via a scoped GitHub token
 that has no merge permission. That draft PR is **Gate 2** -- you review it
 (the dashboard renders a session graph of what actually happened, risk-
@@ -86,6 +98,16 @@ pros plan <repoRoot> "<task description>" [--run-id=<id>]
 
 pros answer <question-id> <choice> --effect=<continue_within_approved_plan|requires_plan_amendment|abort>
   # resolves a parked checkpoint (Gate 1 approval, or any ask_human question)
+  # -- an approve here is picked up automatically within ~2 minutes by the
+  # scheduled Gate 1 continuation job if `pros schedule start` is running;
+  # see `pros implement` below to run it immediately instead of waiting.
+
+pros implement <run-id>
+  # manually drives an approved Gate 1 run through Gate 2 (implement ->
+  # verify -> review -> draft PR) right now, instead of waiting for the
+  # scheduled continuation job. Refuses if Gate 1 isn't answered with
+  # effect=continue_within_approved_plan, or if Gate 2 was already started
+  # for this run (by a previous `pros implement` call or the scheduled job)
 
 pros reconcile [--stale-after=<ms>]
   # scans worktrees/leases/in-flight PR ops for orphans after a crash;
@@ -93,19 +115,14 @@ pros reconcile [--stale-after=<ms>]
 
 pros schedule start [--interval=<pollIntervalMs>]
   # starts the long-running scheduler loop: trigger sweep (default every
-  # 5 min) + weekly skillrank pass. Runs until killed -- not a cron job,
-  # not a system service; supervise it yourself (systemd --user, tmux, a
-  # process manager)
+  # 5 min) + Gate 1 -> Gate 2 continuation sweep (every 2 min) + weekly
+  # skillrank pass. Runs until killed -- not a cron job, not a system
+  # service; supervise it yourself (systemd --user, tmux, a process manager)
 
 pros schedule status
   # reads the durable per-job status files and prints them -- works even
   # if no scheduler loop is currently running in this process
 ```
-
-**There is no `pros implement` CLI verb yet.** `runGate2Pipeline`
-(implementation -> verify -> review -> draft PR) is fully built and tested
-in `@pros/implement`, but M4-M7 never added a CLI entry point that calls it
-outside of tests. See "Known gaps."
 
 ### The MCP server (`ask_human`, `submit_plan`)
 
@@ -132,7 +149,7 @@ not invoke it directly.
 | `PROS_CLAUDE_HOME` | `<HOME>/.claude` | `@pros/miner` | Where your real Claude Code history lives -- point this at an extracted backup to replay against old history. |
 | `PROS_SCHEDULE_STATUS_DIR` | `<HOME>/.pros/schedule` | `/schedule` page, `pros schedule status` | Durable per-job status files. |
 | `PROS_SKILLRANK_OUT` | `<HOME>/.pros/skillrank` | `/skills` page | Weekly proposals output. |
-| `PROS_SKILL_LOCK_FILE` | `<HOME>/.pros/skill-registry-lock.json` **(see warning below)** | skillrank weekly job | **Must be set explicitly** to this repo's real `skill-registry-lock.json` (e.g. `/home/manas/Code/ProsHarness/skill-registry-lock.json`) for skillrank to know what's actually installed. Left at its default, skillrank will treat everything as uninstalled -- safe (nothing crashes, nothing installs), but every candidate gets proposed regardless of what you already have. |
+| `PROS_SKILL_LOCK_FILE` | `<repoRoot>/skill-registry-lock.json` (fixed post-M7, see docs/12-cleanup-log.md) | skillrank weekly job | Correct out of the box now -- `repoRoot` is `PROS_REPO_ROOT` (below) or `process.cwd()`, so as long as you run/point the scheduler at this repo, skillrank sees what's actually installed with no manual configuration. Only set this explicitly if your lock file lives somewhere else entirely. |
 | `PROS_MAX_CONCURRENT` | `3` | ambient trigger sweep | How many unattended runs (Gate 2 + trigger-admitted) may hold a lease slot at once. |
 | `PROS_MAX_TOKENS_PER_RUN` | `200000` | ambient trigger sweep | Per-run token ceiling for trigger-admitted runs. |
 | `PROS_REPO_ROOT` | `process.cwd()` | `pros schedule start`, `SweepSource` | The repo the scheduled sweep operates on. |
@@ -159,76 +176,67 @@ env | grep -iE 'ANTHROPIC|OPENAI'   # must stay empty (or only show unrelated su
 ## Known gaps, consolidated across all seven milestones
 
 Ordered roughly by "how much it limits actually using this day to day."
+Items formerly numbered 1, 2, and 5 here were closed in the post-M7 cleanup
+pass (docs/12-cleanup-log.md) and are recorded there, not re-listed below.
 
-1. **No `pros implement` CLI verb.** `runGate2Pipeline` is fully built and
-   tested (M4) but only invoked from tests -- there is no way to trigger
-   implementation of an approved plan except by calling the pipeline
-   function directly. The natural next step for anyone picking this project
-   back up. (M4/M7)
-2. **The `@pros/barrier` guardian kill-test #2 ("watchdog fails closed when
-   the daemon stops heartbeating") is environment-sensitive on this
-   machine** -- it failed 3/3 times in isolated re-runs during the M7
-   session, more consistently than earlier milestone logs' "occasional
-   flake under heavy concurrent load" framing suggested. Root cause is
-   suspected to be cgroup v2/`systemd-run --scope` timing latency under
-   this machine's current load, not application logic, but this has not
-   been root-caused, only observed and reproduced. Confirmed NOT touched by
-   any milestone's own changes (checked via `git diff` before every
-   milestone's log was written). Worth a dedicated investigation before
-   trusting the containment guarantee under real load. (M1, re-confirmed
-   M3/M5/M6/M7)
-3. **The skillrank candidate catalog is a small (11-entry), static,
+1. **The skillrank candidate catalog is a small (11-entry), static,
    hand-authored seed list**, not a live query against the real skill
    registry -- deliberately offline for reproducibility and to avoid an
    unattended nightly network dependency. It will not surface a genuinely
    new/trending skill outside that list. (M7)
-4. **Three of the four trigger source adapters' real-network fetch paths
+2. **Three of the four trigger source adapters' real-network fetch paths
    (Linear GraphQL, Slack `conversations.history`, Granola REST) are written
    but never exercised against a real account or real credentials** -- by
    design, since this project's safety constraints forbid touching real
    accounts. The first real use of each is effectively its integration
    test. (M7)
-5. **`PROS_SKILL_LOCK_FILE`'s default does not point at this repo's actual
-   lock file** -- must be set explicitly, see the configuration table above.
-   (M7)
-6. **Scheduling is an in-process Node loop you start and supervise
+3. **Scheduling is an in-process Node loop you start and supervise
    yourself** (`pros schedule start`), not a cron job or system service.
-   Killing that process silently stops all ambient triggers and the weekly
-   skillrank pass until restarted -- there is no watchdog on the scheduler
-   itself. (M7)
-7. **Stage B of the learning loop (LLM-batched, Codex-style session-card
+   Killing that process silently stops all ambient triggers, the Gate 1
+   continuation sweep, and the weekly skillrank pass until restarted --
+   there is no watchdog on the scheduler itself. (M7)
+4. **The real-CLI acceptance tests (`@pros/mcp`, `@pros/plan`) self-skip,
+   not fail, when the live `claude` subprocess doesn't respond within their
+   60s budget** -- this is expected variance calling a real, subscription-
+   backed model, not a bug, but it means `pnpm -r test`'s skip count is
+   1-2 depending on real-world latency at the moment you run it (confirmed:
+   5 repeated full-suite runs during the post-M7 cleanup pass, 0 failures,
+   skip count varied 1-2 for exactly this reason -- see
+   docs/12-cleanup-log.md). Don't assume a skip count change is a
+   regression without checking which test skipped and why.
+5. **Stage B of the learning loop (LLM-batched, Codex-style session-card
    prose: task/task_group/outcome/keywords, generalized preference rules)
    is not implemented as a live model call** -- privacy posture (no network
    egress of personal history content during an unattended run) meant M6
    shipped Stage A (deterministic extraction) only. Clustering and loop
    proposals are fully deterministic, not LLM-narrated. (M6)
-8. **The correction-mining regexes are calibrated against one real dataset
+6. **The correction-mining regexes are calibrated against one real dataset
    by hand**, not derived from the original research's undocumented
    methodology -- they land in the same order of magnitude per category
    (309 corrections found vs. ~290 estimated) but are not a byte-for-byte
    reproduction of the original category breakdown. (M6)
-9. **"New to you" (`@pros/review`'s new-to-you check) is scoped to three
+7. **"New to you" (`@pros/review`'s new-to-you check) is scoped to three
    candidate kinds** (bash verb, tool name, file extension) with a
    conservative, small, fixed command-token allowlist for diff-text
    extraction -- a precision-over-recall tradeoff. An unfamiliar CLI tool
    outside that allowlist would not be flagged even if genuinely new to the
    user. (M6)
-10. **Code-structure diagrams (call path, module boundary) are out of
-    scope entirely** -- per D15, the primary diagram is the session graph
-    (recorded fact, zero inference), and code-structure diagrams were
-    explicitly demoted to "on demand, static approximation, never a
-    milestone commitment." Not built at all. (design decision, not a gap
-    per se, but worth knowing if you expected them)
-11. **The root-cause DAG mentioned early in the research is an abandoned
-    experiment**, not a shipped feature. (design decision, per D15)
-12. **No cost/dollar-spend dashboard exists** -- deliberately deferred per
+8. **Code-structure diagrams (call path, module boundary) are out of
+   scope entirely** -- per D15, the primary diagram is the session graph
+   (recorded fact, zero inference), and code-structure diagrams were
+   explicitly demoted to "on demand, static approximation, never a
+   milestone commitment." Not built at all. (design decision, not a gap
+   per se, but worth knowing if you expected them)
+9. **The root-cause DAG mentioned early in the research is an abandoned
+   experiment**, not a shipped feature. (design decision, per D15)
+10. **No cost/dollar-spend dashboard exists** -- deliberately deferred per
     D16; subscription utilization (`rate_limit_event`) is the admission-
     control signal, token counts are the operational metric, no dollar
     totals are computed or displayed anywhere.
-13. **Multi-tenancy does not exist** -- this is a single-user (dogfood)
+11. **Multi-tenancy does not exist** -- this is a single-user (dogfood)
     system by design (D1); there is no auth layer on the dashboard beyond
     "reachable only over your own Tailscale network."
-14. **The dashboard's newer pages (`/graph`, `/review`, `/loops`,
+12. **The dashboard's newer pages (`/graph`, `/review`, `/loops`,
     `/schedule`, `/skills`) are tested at the data-layer plus a static
     source-inspection test, not with a React-testing-library/jsdom render**
     -- a consistent, pre-existing convention across M5-M7, not a new gap
@@ -245,10 +253,12 @@ env | grep -iE 'ANTHROPIC|OPENAI'
 # 2. Full typecheck: must be clean across all 19 packages
 pnpm -r typecheck
 
-# 3. Full test suite: expect 284 tests, ~282-284 passing depending on the
-#    @pros/barrier environment sensitivity noted above; investigate any
-#    OTHER failure immediately, don't assume it's "the same known flake"
-#    without re-checking which test failed
+# 3. Full test suite: expect 296 tests, 294-295 passing / 1-2 skipped --
+#    the skip-count variance is ONLY the real-CLI acceptance tests
+#    (@pros/mcp, @pros/plan) self-skipping on real subprocess latency (see
+#    "Known gaps" and docs/12-cleanup-log.md); ANY actual failure (not
+#    skip) is a real regression -- investigate immediately, don't assume
+#    it's a known flake without checking which test failed and why.
 pnpm -r test    # timeout 300000-600000ms
 
 # 4. Before any claude/codex CLI version bump: replay the recorded
@@ -288,9 +298,10 @@ pnpm -r test    # timeout 300000-600000ms
 | M5 | The session graph (`@pros/graph`), the dashboard's review page (risk-ranked hunks, focus checklist), AST-gated code diagrams. | `08-m5-implementation-log.md` |
 | M6 | The learning loop: `@pros/miner` (correction mining, session cards, pr-link-gated clustering, loop proposals), "new to you" in `@pros/review`, the dashboard's `/loops` page. | `09-m6-implementation-log.md` |
 | M7 | Ambient triggers (`@pros/triggers`: Linear, Slack, scheduled sweep, Granola) + skillrank weekly proposals (`@pros/skillrank`) + the scheduler (`@pros/schedule`) + `pros schedule` CLI + `/schedule` and `/skills` dashboard pages. | `10-m7-implementation-log.md` |
+| Cleanup | Root-caused and fixed the `@pros/barrier` guardian kill-test #2 race (a real implementation bug, not a flake). Closed the Gate 1 -> Gate 2 continuation gap (`pros implement`, the scheduled continuation job) and the wrong `PROS_SKILL_LOCK_FILE` default. | `12-cleanup-log.md` |
 
-This is the last planned milestone. There is no M8 in the roadmap as
-written -- picking this project back up means either using it as-is (see
-"Known gaps" #1 for the one missing piece that would make that materially
-easier: a `pros implement` CLI verb) or choosing new scope deliberately,
-not discovering it was silently expected.
+M7 was the last planned milestone; the cleanup pass above closed the gaps
+that made the system hardest to actually pick back up and use. There is no
+M8 in the roadmap as written -- from here it's either using the system
+as-is or choosing new scope deliberately, not discovering it was silently
+expected.
