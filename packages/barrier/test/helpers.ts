@@ -29,8 +29,27 @@ export function uniqueUnitSuffix(): string {
   return randomUUID().slice(0, 8);
 }
 
-/** Best-effort cleanup of any systemd --user scope units matching a prefix, for test hygiene. */
+/**
+ * Best-effort cleanup of any systemd --user scope units matching a prefix,
+ * for test hygiene.
+ *
+ * Also waits for each matched unit to be fully unloaded (LoadState
+ * not-found) before returning, not just fired-and-forgotten kill/stop
+ * calls. This closes a real, reproduced-on-this-host race: back-to-back
+ * `systemd-run --scope --collect` churn (many transient scopes created and
+ * torn down within a few seconds, which is exactly what this test suite
+ * does but no real usage of this codebase ever does -- one attempt runs at
+ * a time) can leave a just-stopped scope's teardown still settling in
+ * systemd's own bookkeeping when the *next* test immediately creates a new
+ * scope; that overlap was observed to make the new scope's cgroup
+ * disappear (every member, simultaneously, via an untrappable signal)
+ * within a couple hundred ms of a confirmed-live start. Confirming the
+ * previous scope is truly gone -- not just asking it to stop -- removes
+ * the overlap at its source instead of padding every `Guardian.launch()`
+ * caller (including latency-sensitive ones) with unconditional extra delay.
+ */
 export async function killUnitsMatching(prefix: string): Promise<void> {
+  let units: string[] = [];
   try {
     const { stdout } = await execFileAsync("systemctl", [
       "--user",
@@ -40,7 +59,7 @@ export async function killUnitsMatching(prefix: string): Promise<void> {
       "--plain",
       `${prefix}*`,
     ]);
-    const units = stdout
+    units = stdout
       .split("\n")
       .map((l) => l.trim().split(/\s+/)[0])
       .filter(Boolean) as string[];
@@ -50,6 +69,16 @@ export async function killUnitsMatching(prefix: string): Promise<void> {
     }
   } catch {
     /* systemctl list-units failing is not fatal to test cleanup */
+  }
+  for (const u of units) {
+    await waitFor(async () => {
+      const loadState = (
+        await execFileAsync("systemctl", ["--user", "show", u, "--property=LoadState", "--value"]).catch(() => ({
+          stdout: "not-found",
+        }))
+      ).stdout.trim();
+      return loadState === "not-found" || loadState === "";
+    }, 1000).catch(() => undefined);
   }
 }
 
