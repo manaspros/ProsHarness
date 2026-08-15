@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { runAnswerCommand } from "./answer.js";
+import { runPlanCommand } from "./plan.js";
 
 async function main(): Promise<void> {
   const [, , cmd, ...rest] = process.argv;
@@ -9,8 +10,18 @@ async function main(): Promise<void> {
       console.log(result);
       break;
     }
+    case "plan": {
+      const result = await runPlanCommand(rest);
+      console.log(result);
+      break;
+    }
     default:
-      console.error("usage: pros answer <question-id> <choice> [--effect=continue_within_approved_plan|requires_plan_amendment|abort]");
+      console.error(
+        [
+          "usage: pros answer <question-id> <choice> [--effect=continue_within_approved_plan|requires_plan_amendment|abort]",
+          '       pros plan <repoRoot> "<description>" [--run-id=<id>]',
+        ].join("\n"),
+      );
       process.exit(cmd ? 1 : 0);
   }
 }
