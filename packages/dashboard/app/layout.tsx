@@ -55,6 +55,8 @@ const globalStyle = `
   .badge.running { background: #c8f0c8; }
   .badge.done { background: #d8d8d8; }
   .badge.idle { background: #eee; }
+  .badge.pass { background: #c8f0c8; }
+  .badge.fail { background: #fde2e2; }
   pre.plan-markdown {
     white-space: pre-wrap;
     background: #fff;

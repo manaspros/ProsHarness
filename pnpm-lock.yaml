@@ -87,12 +87,18 @@ importers:
       '@pros/barrier':
         specifier: workspace:*
         version: link:../barrier
+      '@pros/graph':
+        specifier: workspace:*
+        version: link:../graph
       '@pros/index':
         specifier: workspace:*
         version: link:../index
       '@pros/plan':
         specifier: workspace:*
         version: link:../plan
+      '@pros/review':
+        specifier: workspace:*
+        version: link:../review
       better-sqlite3:
         specifier: ^11.10.0
         version: 11.10.0
@@ -118,6 +124,34 @@ importers:
       '@types/react-dom':
         specifier: ^19.0.0
         version: 19.2.4(@types/react@19.2.18)
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.12
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
+  packages/graph:
+    dependencies:
+      '@pros/adapters':
+        specifier: workspace:*
+        version: link:../adapters
+      '@pros/index':
+        specifier: workspace:*
+        version: link:../index
+    devDependencies:
+      '@pros/barrier':
+        specifier: workspace:*
+        version: link:../barrier
+      '@types/better-sqlite3':
+        specifier: ^7.6.13
+        version: 7.6.13
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      better-sqlite3:
+        specifier: ^11.10.0
+        version: 11.10.0
       tsx:
         specifier: ^4.19.0
         version: 4.23.12
@@ -254,6 +288,19 @@ importers:
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
+
+  packages/review:
+    dependencies:
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.12
 
   packages/worktree:
     dependencies:

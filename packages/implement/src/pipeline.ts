@@ -156,6 +156,7 @@ export interface Gate2PipelineResult {
 export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate2PipelineResult> {
   let lease: ConcurrencyLease | undefined;
   let heartbeatTimer: NodeJS.Timeout | undefined;
+  let journal: Journal | undefined;
 
   if (opts.leaseDir) {
     if (opts.maxConcurrent === undefined) {
@@ -181,6 +182,16 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
     const ghClient = opts.ghClient ?? new RealGhClient();
 
     const fenceEpoch = (await loadRunState(opts.runDir)).fenceEpoch;
+
+    // Opened once, here, and reused for the whole function (rather than the
+    // narrower open done right before the PR-intent append further down) so
+    // the verdict/review journal entries added below -- which must be
+    // recorded even on the early-return/abort paths -- have a handle to
+    // write through. Same `journal.append({...} as any)` tolerant-parsing
+    // pattern as pr_create_intent/pr_created (see file doc comment): these
+    // are ad-hoc `kind`s outside @pros/barrier's closed JournalEntry union,
+    // and unknown kinds already pass through Journal/RunState untouched.
+    journal = await Journal.open(opts.runDir);
 
     const implementResult = await runImplementation({
       claudeSession,
@@ -213,6 +224,21 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
       tokenCeiling: opts.tokenCeiling,
     });
 
+    // Durably record the verdict BEFORE checking outcome, so a failing
+    // verdict is journaled exactly as reliably as a passing one -- "a run
+    // that dropped a verification-failed event must never look healthy" is
+    // a standing project invariant, and the M5 review page needs this as a
+    // recorded fact, not an in-memory-only inference.
+    await journal.append({
+      runId: opts.runId,
+      fenceEpoch,
+      kind: "verify_verdict",
+      outcome: verdict.outcome,
+      summary: verdict.summary,
+      failingChecksJson: JSON.stringify(verdict.failingChecks),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
     if (verdict.outcome === "fail") {
       return {
         implementResult,
@@ -234,6 +260,19 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
       attemptIdPrefix: opts.runId,
       tokenCeiling: opts.tokenCeiling,
     });
+
+    // Same reasoning as verify_verdict above: recorded before the
+    // blockers-present check, unconditionally, so it's a durable fact
+    // regardless of whether the pipeline goes on to open a PR.
+    await journal.append({
+      runId: opts.runId,
+      fenceEpoch,
+      kind: "review_completed",
+      verdict: review.verdict,
+      objectionsJson: JSON.stringify(review.objections),
+      unresolvedBlockersJson: JSON.stringify(review.unresolvedBlockers),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
 
     if (review.verdict === "blockers-present") {
       return {
@@ -266,7 +305,6 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
     const body = bodyLines.join("\n");
     const title = `[pros ${opts.runId}] automated implementation`;
 
-    const journal = await Journal.open(opts.runDir);
     const prIntentId = randomUUID();
     const prIdempotencyKey = `pr-${opts.runId}`;
 
@@ -368,6 +406,12 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
   } finally {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     if (lease) await lease.release();
+    // Drain the journal's serialized write queue (Journal has no other
+    // open OS resource to release -- append() opens/closes its file handle
+    // per write) before returning, on every path including early
+    // returns/thrown errors, so a caller reading the journal right after
+    // this function resolves never races an in-flight append.
+    if (journal) await journal.close();
   }
 }
 

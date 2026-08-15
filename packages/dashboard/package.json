@@ -12,8 +12,10 @@
   },
   "dependencies": {
     "@pros/barrier": "workspace:*",
+    "@pros/graph": "workspace:*",
     "@pros/index": "workspace:*",
     "@pros/plan": "workspace:*",
+    "@pros/review": "workspace:*",
     "better-sqlite3": "^11.10.0",
     "next": "^15.5.0",
     "react": "^19.0.0",

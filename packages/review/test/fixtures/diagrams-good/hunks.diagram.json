@@ -1,0 +1,6 @@
+{
+  "file": "packages/review/src/hunks.ts",
+  "symbols": ["rankHunks", "Hunk", "RiskRankedDiff"],
+  "title": "rankHunks overview",
+  "description": "Static approximation of how rankHunks turns a git diff into risk-ranked hunks."
+}

@@ -160,6 +160,10 @@ export default async function RunDetailPage({ params }: { params: Promise<{ runI
         <a href={`/runs/${encodeURIComponent(runId)}/plan`}>Plan &rarr;</a>
         {" | "}
         <a href={`/runs/${encodeURIComponent(runId)}/questions`}>Questions &rarr;</a>
+        {" | "}
+        <a href={`/runs/${encodeURIComponent(runId)}/graph`}>Session graph &rarr;</a>
+        {" | "}
+        <a href={`/runs/${encodeURIComponent(runId)}/review`}>Review &rarr;</a>
       </p>
     </div>
   );

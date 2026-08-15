@@ -1,0 +1,6 @@
+{
+  "file": "packages/review/src/hunks.ts",
+  "symbols": ["rankHunks", "totallyBogusSymbolThatDoesNotExist"],
+  "title": "rankHunks overview (bad)",
+  "description": "Cites a symbol that does not exist in hunks.ts, to prove the build gate fails closed."
+}

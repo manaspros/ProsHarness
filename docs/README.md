@@ -14,6 +14,7 @@ Read in this order:
 | [`05-m2-implementation-log.md`](05-m2-implementation-log.md) | M2 complete: `pros plan` -- adapters, rebuildable SQLite index, worktree allocator saga, plan/critique/debate pipeline. |
 | [`06-m3-implementation-log.md`](06-m3-implementation-log.md) | M3: Gate 1 -- `submit_plan`, the `ExitPlanMode` hook, the dashboard, ntfy push. |
 | [`07-m4-implementation-log.md`](07-m4-implementation-log.md) | M4 complete: Gate 2 -- Sonnet `scoped-fixer` implementation, background-session verification (verdict only), Codex+`claude ultrareview` adversarial review (a skill), draft PR via `gh` with a real merge-blocking credential boundary, concurrency lease + token ceilings, `pros reconcile`. |
+| [`08-m5-implementation-log.md`](08-m5-implementation-log.md) | M5 complete: the session graph (`@pros/graph`, zero-LLM, every node traces to a real `raw_events` row), the dashboard's review page (`@pros/review` -- deterministic risk-ranked hunks, focus checklist) with a build-time AST symbol gate for code diagrams, and durable `verify_verdict`/`review_completed` journaling. |
 
 ## The three facts the whole design rests on
 

@@ -345,3 +345,147 @@ test("reconcilePrOps: reports needsManualRetry when no PR is found for the branc
     await rm(runsRoot, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// M5: verdict/review durably journaled (not just returned in-memory)
+// ---------------------------------------------------------------------------
+
+test("happy path journals a verify_verdict (pass) and a review_completed (approve) entry", async () => {
+  const runId = "run-journal-happy-1";
+  const repo = await makeRepoScenario(`pros/${runId}/attempt`);
+  const { runsRoot, runDir } = await makeRunDir(runId);
+  try {
+    const ghClient = new CountingGhClient(new LocalGhStub({ bareRepoPath: repo.bareRepoPath }));
+
+    const result = await runGate2Pipeline({
+      runId,
+      runDir,
+      worktreePath: repo.workDir,
+      branch: repo.branch,
+      baseBranch: repo.baseBranch,
+      repoRoot: REPO_ROOT,
+      planMarkdown: "# Plan\nFix the thing.",
+      fileAllowlist: ["fix.txt"],
+      claudeSession: new ClaudeStageSession(repo.workDir),
+      codexSession: new CodexReviewSession([]),
+      verifierSession: new VerifierSession({ outcome: "pass", summary: "all checks pass", failingChecks: [] }),
+      ghClient,
+      ghCredential: CRED,
+    });
+
+    assert.ok(result.pr, "expected a draft PR to be opened");
+
+    const { entries } = await Journal.read(runDir);
+    const raw = entries as unknown as Array<Record<string, unknown>>;
+
+    const verdictEntry = raw.find((e) => e.kind === "verify_verdict");
+    assert.ok(verdictEntry, "expected a durably journaled verify_verdict entry");
+    assert.equal(verdictEntry!.outcome, "pass");
+    assert.equal(verdictEntry!.summary, "all checks pass");
+    assert.deepEqual(JSON.parse(verdictEntry!.failingChecksJson as string), []);
+
+    const reviewEntry = raw.find((e) => e.kind === "review_completed");
+    assert.ok(reviewEntry, "expected a durably journaled review_completed entry");
+    assert.equal(reviewEntry!.verdict, "approve");
+    assert.deepEqual(JSON.parse(reviewEntry!.unresolvedBlockersJson as string), []);
+  } finally {
+    await cleanupRepoScenario(repo);
+    await rm(runsRoot, { recursive: true, force: true });
+  }
+});
+
+test("FAILING verification is durably journaled as verify_verdict(fail), not swallowed -- no review_completed follows", async () => {
+  const runId = "run-journal-verify-fail-1";
+  const repo = await makeRepoScenario(`pros/${runId}/attempt`);
+  const { runsRoot, runDir } = await makeRunDir(runId);
+  try {
+    const ghClient = new CountingGhClient(new LocalGhStub({ bareRepoPath: repo.bareRepoPath }));
+
+    const result = await runGate2Pipeline({
+      runId,
+      runDir,
+      worktreePath: repo.workDir,
+      branch: repo.branch,
+      baseBranch: repo.baseBranch,
+      repoRoot: REPO_ROOT,
+      planMarkdown: "# Plan\nFix the thing.",
+      fileAllowlist: ["fix.txt"],
+      claudeSession: new ClaudeStageSession(repo.workDir),
+      codexSession: new CodexReviewSession([]),
+      verifierSession: new VerifierSession({
+        outcome: "fail",
+        summary: "pnpm test: 2 failing",
+        failingChecks: ["pnpm test: 2 failing"],
+      }),
+      ghClient,
+      ghCredential: CRED,
+    });
+
+    assert.equal(result.pr, undefined);
+    assert.ok(result.aborted);
+    assert.equal(result.aborted!.stage, "verify");
+
+    // The whole point: a run that dropped a verification-failed event must
+    // never look healthy -- the FAILING verdict must be recorded, not
+    // swallowed, even though the pipeline aborted right after.
+    const { entries } = await Journal.read(runDir);
+    const raw = entries as unknown as Array<Record<string, unknown>>;
+
+    const verdictEntry = raw.find((e) => e.kind === "verify_verdict");
+    assert.ok(verdictEntry, "expected a durably journaled verify_verdict entry even on a failing run");
+    assert.equal(verdictEntry!.outcome, "fail");
+    assert.equal(verdictEntry!.summary, "pnpm test: 2 failing");
+    assert.deepEqual(JSON.parse(verdictEntry!.failingChecksJson as string), ["pnpm test: 2 failing"]);
+
+    // Review never runs after a failing verdict, so no review_completed
+    // entry should exist for this run.
+    const reviewEntry = raw.find((e) => e.kind === "review_completed");
+    assert.equal(reviewEntry, undefined, "review stage never ran after a failing verdict -- no review_completed expected");
+  } finally {
+    await cleanupRepoScenario(repo);
+    await rm(runsRoot, { recursive: true, force: true });
+  }
+});
+
+test("review with an unresolved blocker is durably journaled as review_completed(blockers-present)", async () => {
+  const runId = "run-journal-review-blocker-1";
+  const repo = await makeRepoScenario(`pros/${runId}/attempt`);
+  const { runsRoot, runDir } = await makeRunDir(runId);
+  try {
+    const ghClient = new CountingGhClient(new LocalGhStub({ bareRepoPath: repo.bareRepoPath }));
+    const blocker = { severity: "blocker", claim: "introduces a regression", suggested_change: "revert the change" };
+
+    const result = await runGate2Pipeline({
+      runId,
+      runDir,
+      worktreePath: repo.workDir,
+      branch: repo.branch,
+      baseBranch: repo.baseBranch,
+      repoRoot: REPO_ROOT,
+      planMarkdown: "# Plan\nFix the thing.",
+      fileAllowlist: ["fix.txt"],
+      claudeSession: new ClaudeStageSession(repo.workDir),
+      codexSession: new CodexReviewSession([blocker]),
+      verifierSession: new VerifierSession({ outcome: "pass", summary: "all checks pass", failingChecks: [] }),
+      ghClient,
+      ghCredential: CRED,
+    });
+
+    assert.equal(result.pr, undefined);
+    assert.ok(result.aborted);
+    assert.equal(result.aborted!.stage, "review");
+
+    const { entries } = await Journal.read(runDir);
+    const raw = entries as unknown as Array<Record<string, unknown>>;
+
+    const reviewEntry = raw.find((e) => e.kind === "review_completed");
+    assert.ok(reviewEntry, "expected a durably journaled review_completed entry even when blockers abort the pipeline");
+    assert.equal(reviewEntry!.verdict, "blockers-present");
+    const unresolvedBlockers = JSON.parse(reviewEntry!.unresolvedBlockersJson as string);
+    assert.equal(unresolvedBlockers.length, 1);
+    assert.equal(unresolvedBlockers[0].claim, "introduces a regression");
+  } finally {
+    await cleanupRepoScenario(repo);
+    await rm(runsRoot, { recursive: true, force: true });
+  }
+});
