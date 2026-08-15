@@ -1,7 +1,17 @@
 import path from "node:path";
 import Link from "next/link";
 import type React from "react";
-import { FileText, GitBranch, FolderGit2, ShieldCheck, MessageSquarePlus } from "lucide-react";
+import {
+  ArrowLeft,
+  Check,
+  CircleAlert,
+  FileText,
+  FolderGit2,
+  GitBranch,
+  ListTree,
+  MessageSquarePlus,
+  ShieldCheck,
+} from "lucide-react";
 import { loadRunState } from "@pros/barrier";
 import { getPlans, getObjections, type ObjectionRow } from "@pros/index";
 import { getRunsRoot, getIndexDbPath } from "../../../../lib/config";
@@ -66,23 +76,28 @@ export default async function PlanPage({
     ? [...state.checkpoints.values()].find((cp) => cp.gateType === "plan_approval" && cp.phase === "parked")
     : undefined;
 
-  const backLink = (
-    <p className="mb-4 text-sm">
-      <Link href={`/runs/${encodeURIComponent(runId)}`} className="text-muted-foreground hover:text-foreground">
-        &larr; run overview
-      </Link>
-    </p>
-  );
-
   return (
-    <div>
-      {backLink}
+    <div className="space-y-5">
+      <Link
+        href={`/runs/${encodeURIComponent(runId)}`}
+        className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <ArrowLeft className="h-3.5 w-3.5" />
+        run overview
+      </Link>
       <SectionHeading
         as="h1"
-        title="Plan"
+        title={
+          <span className="flex flex-wrap items-center gap-2.5">
+            Plan review
+            <Badge variant="outline" className="gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em]">
+              Gate 1
+            </Badge>
+          </span>
+        }
         description={
           <>
-            Run <code className="text-xs">{runId}</code>
+            Decide what should happen next for <code className="text-xs">{runId}</code>
           </>
         }
       />
@@ -136,13 +151,19 @@ function PlanContent({
   const encodedRunId = encodeURIComponent(runId);
 
   return (
-    <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+    <div className="mt-6 grid grid-cols-1 gap-5 xl:grid-cols-[176px_minmax(0,1fr)_340px]">
+      {/* Left rail: the document outline keeps a long plan spatially legible. */}
+      <PlanOutline sections={sections} />
+
       {/* Centre: the plan document itself -- a reading surface. */}
-      <Surface elevation="raised" className="min-w-0 p-6 sm:p-8">
+      <Surface elevation="raised" className="min-w-0 p-6 sm:p-8 xl:p-10">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border pb-4">
           <div className="min-w-0">
-            <p className="font-mono text-xs text-muted-foreground">
-              plan <span className="text-foreground">{current.plan_id}</span> &middot; v{current.version}
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+              Working document
+            </p>
+            <p className="mt-1 font-mono text-xs text-foreground/80">
+              {current.plan_id} <span className="text-muted-foreground">· v{current.version}</span>
             </p>
             {current.edited_at && (
               <p className="mt-1 text-xs text-muted-foreground">
@@ -182,7 +203,7 @@ function PlanContent({
           </div>
         )}
 
-        <div className="mt-6">
+        <div className="mt-7">
           {sections.map((section) => (
             <div key={section.id} id={section.id}>
               <PlanMarkdown>{section.markdown}</PlanMarkdown>
@@ -194,11 +215,44 @@ function PlanContent({
       </Surface>
 
       {/* Right rail: Codex critique + composer + Gate 1 actions. */}
-      <div className="flex min-w-0 flex-col gap-6">
+      <div className="flex min-w-0 flex-col gap-4 xl:sticky xl:top-6 xl:self-start">
+        <Surface elevation="base" className="p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Review signal</p>
+              <p className="mt-1 text-sm font-semibold text-foreground">
+                {unresolvedObjections.length === 0 ? "Ready for approval" : "Needs your attention"}
+              </p>
+            </div>
+            {unresolvedObjections.length === 0 ? (
+              <span className="grid h-8 w-8 place-items-center rounded-full bg-status-pass/15 text-status-pass">
+                <Check className="h-4 w-4" />
+              </span>
+            ) : (
+              <span className="grid h-8 w-8 place-items-center rounded-full bg-status-parked/15 text-status-parked">
+                <CircleAlert className="h-4 w-4" />
+              </span>
+            )}
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-2 border-t border-border pt-3">
+            <div>
+              <div className="text-lg font-semibold text-foreground">{unresolvedObjections.length}</div>
+              <div className="text-[11px] text-muted-foreground">open objections</div>
+            </div>
+            <div>
+              <div className="text-lg font-semibold text-foreground">v{current.version}</div>
+              <div className="text-[11px] text-muted-foreground">plan version</div>
+            </div>
+          </div>
+        </Surface>
+
         <Surface elevation="raised" className="p-5">
-          <h2 className="text-sm font-semibold text-foreground">
-            Objections {unresolvedObjections.length > 0 && <span className="text-muted-foreground">({unresolvedObjections.length})</span>}
-          </h2>
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold text-foreground">Codex objections</h2>
+            <Badge variant="outline" className="rounded-full px-2 py-0.5 text-[10px]">
+              {unresolvedObjections.length} open
+            </Badge>
+          </div>
           <div className="mt-4">
             {unresolvedObjections.length === 0 ? (
               <EmptyState
@@ -285,6 +339,44 @@ function PlanContent({
         )}
       </div>
     </div>
+  );
+}
+
+function PlanOutline({ sections }: { sections: ReturnType<typeof splitMarkdownIntoSections> }) {
+  return (
+    <aside className="hidden min-w-0 xl:block">
+      <div className="sticky top-6">
+        <div className="flex items-center gap-2 px-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+          <ListTree className="h-3.5 w-3.5" />
+          In this plan
+        </div>
+        <nav className="mt-3 border-l border-border pl-3" aria-label="Plan sections">
+          <div className="flex flex-col gap-0.5">
+            {sections.map((section, index) => (
+              <a
+                key={section.id}
+                href={`#${section.id}`}
+                className="group rounded-r-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <span className="mr-1.5 font-mono text-[10px] text-muted-foreground/60 group-hover:text-accent-foreground/70">
+                  {String(index + 1).padStart(2, "0")}
+                </span>
+                <span className="break-words">{section.heading ?? "Overview"}</span>
+              </a>
+            ))}
+          </div>
+        </nav>
+        <div className="mt-8 border-t border-border px-2 pt-4">
+          <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+            <ShieldCheck className="h-3.5 w-3.5" />
+            Decision rule
+          </div>
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+            Approve only when the plan is clear enough to implement and verify.
+          </p>
+        </div>
+      </div>
+    </aside>
   );
 }
 

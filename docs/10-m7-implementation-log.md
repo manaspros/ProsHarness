@@ -224,11 +224,11 @@ not bolted on after:
   anywhere in `src/*.ts`) -- unlike the trigger sources, skillrank has no
   "real" network path at all in this milestone; it is offline by
   construction, not just by configuration.
-- The dashboard's `/schedule` and `/skills` pages are, like `/loops` before
-  them, provably non-mutating: server components, no `<form>`, no
-  `onClick`/`onSubmit`, no `fetch`, no `"use client"` -- verified both by a
-  static-inspection test in each page's data-lib test file and by the
-  orchestrator re-reading both page sources directly.
+- The dashboard's `/schedule` page remains purely informational. `/skills`
+  (like `/loops` after the later regeneration UX pass) exposes an explicit
+  local proposal-generation action, but has no install/apply path; the
+  proposal data remains server-rendered and the non-install invariant is
+  verified by tests.
 
 ## Per-source setup instructions (what the user must provision for real)
 

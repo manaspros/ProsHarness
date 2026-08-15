@@ -53,6 +53,11 @@ const NAV_ITEMS = [
   { href: "/skills", label: "Skills", icon: Wrench },
 ] as const;
 
+const NAV_GROUPS = [
+  { label: "Workspace", items: NAV_ITEMS.slice(0, 2) },
+  { label: "Signals", items: NAV_ITEMS.slice(2) },
+] as const;
+
 export function SidebarShell({
   recentRuns,
   counts,
@@ -103,7 +108,7 @@ export function SidebarShell({
     <>
       <aside
         className={cn(
-          "sticky top-0 z-10 flex h-screen shrink-0 flex-col border-r border-border bg-surface-raised transition-[width] duration-150 ease-out",
+          "sticky top-0 z-10 flex h-screen shrink-0 flex-col border-r border-white/[0.07] bg-surface-ground/95 transition-[width] duration-150 ease-out",
           collapsed ? "w-[64px]" : "w-[264px]",
           // Avoid a jarring transition before we've read localStorage.
           !hydrated && "transition-none",
@@ -112,17 +117,21 @@ export function SidebarShell({
         data-collapsed={collapsed}
       >
         {/* Header: brand + collapse toggle + command palette trigger */}
-        <div className="flex items-center gap-2 px-3 py-4">
+        <div className="flex items-center gap-2 px-3 py-3.5">
+          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-primary/30 bg-primary/15 text-[11px] font-bold tracking-tight text-primary">
+            p/
+          </span>
           {!collapsed && (
-            <span className="flex-1 truncate text-sm font-semibold tracking-tight text-foreground">
-              pros
+            <span className="flex min-w-0 flex-1 flex-col truncate">
+              <span className="truncate text-sm font-semibold tracking-tight text-foreground">pros</span>
+              <span className="truncate text-[10px] uppercase tracking-[0.14em] text-muted-foreground">operator workspace</span>
             </span>
           )}
           {!collapsed && (
             <Button
               variant="outline"
               size="sm"
-              className="h-7 gap-1 px-2 text-xs text-muted-foreground"
+              className="h-7 gap-1 border-white/[0.08] px-2 text-[11px] text-muted-foreground"
               onClick={() => setPaletteOpen(true)}
               aria-label="Open command palette"
             >
@@ -160,8 +169,8 @@ export function SidebarShell({
         )}
 
         {/* Primary "new session" action */}
-        <div className="px-3 pb-3">
-          <Button asChild className={cn("w-full gap-2", collapsed && "px-0")}>
+        <div className="px-3 pb-4">
+          <Button asChild className={cn("w-full gap-2 shadow-none", collapsed && "px-0")}>
             <Link href="/new" aria-label="New session">
               <Plus className="h-4 w-4 shrink-0" />
               {!collapsed && <span>New session</span>}
@@ -170,39 +179,51 @@ export function SidebarShell({
         </div>
 
         {/* Nav links */}
-        <nav className="flex flex-col gap-0.5 px-2" aria-label="Primary">
-          {NAV_ITEMS.map((item) => {
-            const Icon = item.icon;
-            const active =
-              item.href === "/"
-                ? pathname === "/"
-                : pathname === item.href || pathname?.startsWith(`${item.href}/`);
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={cn(
-                  "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm transition-colors",
-                  active
-                    ? "bg-accent text-accent-foreground"
-                    : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
-                  collapsed && "justify-center px-0",
-                )}
-                title={collapsed ? item.label : undefined}
-              >
-                <Icon className="h-4 w-4 shrink-0" />
-                {!collapsed && <span className="truncate">{item.label}</span>}
-              </Link>
-            );
-          })}
+        <nav className="flex flex-col gap-4 px-2" aria-label="Primary">
+          {NAV_GROUPS.map((group) => (
+            <div key={group.label}>
+              {!collapsed && (
+                <div className="px-2.5 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70">
+                  {group.label}
+                </div>
+              )}
+              <div className="flex flex-col gap-0.5">
+                {group.items.map((item) => {
+                  const Icon = item.icon;
+                  const active =
+                    item.href === "/"
+                      ? pathname === "/"
+                      : pathname === item.href || pathname?.startsWith(`${item.href}/`);
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      aria-current={active ? "page" : undefined}
+                      className={cn(
+                        "flex items-center gap-2.5 rounded-md border border-transparent px-2.5 py-2 text-sm transition-colors",
+                        active
+                          ? "border-border/40 bg-accent text-accent-foreground shadow-sm"
+                          : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
+                        collapsed && "justify-center px-0",
+                      )}
+                      title={collapsed ? item.label : undefined}
+                    >
+                      <Icon className="h-4 w-4 shrink-0" />
+                      {!collapsed && <span className="truncate">{item.label}</span>}
+                    </Link>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </nav>
 
-        <div className="my-3 border-t border-border" />
+        <div className="my-4 border-t border-white/[0.07]" />
 
         {/* Recent sessions -- short, scrollable */}
         {!collapsed && (
           <div className="flex min-h-0 flex-1 flex-col px-2">
-            <div className="px-1.5 pb-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            <div className="px-1.5 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70">
               Recent sessions
             </div>
             <ScrollArea className="min-h-0 flex-1">

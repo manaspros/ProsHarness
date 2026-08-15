@@ -1,9 +1,11 @@
 "use client";
 
 import * as React from "react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 
 import { BoardCard, type BoardCardData } from "./BoardCard";
 import { STAGE_LABELS, type BoardStage } from "@/lib/board-data";
+import { Button } from "@/components/ui/button";
 
 export interface BoardColumn {
   stage: BoardStage;
@@ -109,19 +111,54 @@ export function BoardClient({ columns }: { columns: BoardColumn[] }) {
     }
   }
 
+  function scrollBoard(direction: "left" | "right") {
+    containerRef.current?.scrollBy({
+      left: direction === "right" ? 320 : -320,
+      behavior: "smooth",
+    });
+  }
+
   return (
     <div className="relative h-full min-h-0 flex-1">
+      <div className="mb-2 flex items-center justify-end gap-1">
+        <span className="mr-1 hidden text-[11px] text-muted-foreground sm:inline">Scroll stages</span>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="h-7 w-7"
+          onClick={() => scrollBoard("left")}
+          aria-label="Scroll pipeline left"
+        >
+          <ChevronLeft className="h-3.5 w-3.5" />
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="h-7 w-7"
+          onClick={() => scrollBoard("right")}
+          aria-label="Scroll pipeline right"
+        >
+          <ChevronRight className="h-3.5 w-3.5" />
+        </Button>
+      </div>
       <div
         ref={containerRef}
         onKeyDown={onKeyDown}
         onFocus={onFocus}
-        className="flex h-full min-h-0 flex-1 gap-4 overflow-x-auto pb-2"
+        className="flex h-[min(48rem,calc(100vh-22rem))] min-h-[18rem] flex-1 gap-3 overflow-x-auto pb-2"
       >
         {columns.map((column, colIndex) => (
-          <div key={column.stage} className="flex h-full w-72 shrink-0 flex-col">
-            <div className="mb-2 flex shrink-0 items-baseline justify-between px-1">
-              <h3 className="text-sm font-semibold text-foreground">{STAGE_LABELS[column.stage]}</h3>
-              <span className="text-xs text-muted-foreground">{column.cards.length}</span>
+          <div key={column.stage} className="flex h-full w-[17rem] shrink-0 flex-col">
+            <div className="mb-2 flex shrink-0 items-center justify-between px-1">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary/70" />
+                <h3 className="truncate text-sm font-semibold text-foreground">{STAGE_LABELS[column.stage]}</h3>
+              </div>
+              <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                {column.cards.length}
+              </span>
             </div>
             <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pb-4 pr-1">
               {column.cards.length === 0 ? (

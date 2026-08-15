@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { RotateCcw } from "lucide-react";
+import { ArrowUpRight, CircleAlert, Layers3, Plus, RotateCcw } from "lucide-react";
 
 import { getRunsRoot, getIndexDbPath } from "@/lib/config";
 import { listRuns } from "@/lib/list-runs";
@@ -18,8 +18,8 @@ import {
   type BoardStage,
 } from "@/lib/board-data";
 import { getPlans, getObjections } from "@pros/index";
-import { SectionHeading } from "@/components/SectionHeading";
 import { EmptyState } from "@/components/EmptyState";
+import { Surface } from "@/components/Surface";
 import { Button } from "@/components/ui/button";
 import { BoardClient, type BoardColumn } from "@/components/board/BoardClient";
 import type { Status } from "@/components/StatusPill";
@@ -112,21 +112,58 @@ export default async function HomePage() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-6 p-6">
-      <SectionHeading
-        as="h1"
-        title="Sessions"
-        description={
-          totalRuns === 0
-            ? "No sessions yet."
-            : `${totalRuns} session${totalRuns === 1 ? "" : "s"} total · ${needsAttentionCount} need${needsAttentionCount === 1 ? "s" : ""} attention`
-        }
-        action={
-          <Button asChild variant="outline" size="sm">
-            <Link href="/new">New session</Link>
-          </Button>
-        }
-      />
+    <div className="flex h-full min-h-0 flex-col gap-5">
+      <div className="flex flex-wrap items-end justify-between gap-4 border-b border-border pb-5">
+        <div>
+          <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+            Operations / Workspace
+          </p>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">Sessions</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {totalRuns === 0
+              ? "Your agent work will appear here."
+              : `${totalRuns} session${totalRuns === 1 ? "" : "s"} across the delivery pipeline`}
+          </p>
+        </div>
+        <Button asChild size="sm" className="gap-1.5 shadow-none">
+          <Link href="/new">
+            <Plus className="h-4 w-4" />
+            New session
+          </Link>
+        </Button>
+      </div>
+
+      {totalRuns > 0 && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <Surface elevation="base" grain={false} className="flex items-center gap-3 p-3.5">
+            <span className="grid h-8 w-8 place-items-center rounded-md bg-accent text-accent-foreground">
+              <Layers3 className="h-4 w-4" />
+            </span>
+            <div>
+              <div className="text-lg font-semibold leading-none text-foreground">{totalRuns}</div>
+              <div className="mt-1 text-[11px] text-muted-foreground">tracked sessions</div>
+            </div>
+          </Surface>
+          <Surface elevation="base" grain={false} className="flex items-center gap-3 p-3.5">
+            <span className="grid h-8 w-8 place-items-center rounded-md bg-status-parked/15 text-status-parked">
+              <CircleAlert className="h-4 w-4" />
+            </span>
+            <div>
+              <div className="text-lg font-semibold leading-none text-foreground">{needsAttentionCount}</div>
+              <div className="mt-1 text-[11px] text-muted-foreground">need attention</div>
+            </div>
+          </Surface>
+          <Surface elevation="base" grain={false} className="flex items-center justify-between gap-3 p-3.5">
+            <div>
+              <div className="text-sm font-semibold text-foreground">Read the full history</div>
+              <div className="mt-1 text-[11px] text-muted-foreground">Search every recorded run</div>
+            </div>
+            <Link href="/runs" className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label="Open all runs">
+              <ArrowUpRight className="h-4 w-4" />
+            </Link>
+          </Surface>
+        </div>
+      )}
 
       {totalRuns === 0 ? (
         <EmptyState
@@ -140,7 +177,18 @@ export default async function HomePage() {
           }
         />
       ) : (
-        <BoardClient columns={columns} />
+        <Surface elevation="base" className="flex min-h-0 flex-1 flex-col p-4 sm:p-5">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-semibold text-foreground">Delivery pipeline</h2>
+              <p className="mt-0.5 text-xs text-muted-foreground">A read-only view of what the journal says is happening.</p>
+            </div>
+            <span className="rounded-full border border-border px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+              live index
+            </span>
+          </div>
+          <BoardClient columns={columns} />
+        </Surface>
       )}
     </div>
   );

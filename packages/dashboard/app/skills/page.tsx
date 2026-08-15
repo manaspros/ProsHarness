@@ -4,18 +4,17 @@ import { getSkillrankOutDir, loadSkillProposals, type SkillProposalRecord } from
 import { SectionHeading } from "../../components/SectionHeading";
 import { Surface } from "../../components/Surface";
 import { EmptyState } from "../../components/EmptyState";
+import { RegenerateAction } from "../../components/RegenerateAction";
 
 export const dynamic = "force-dynamic";
 
 /**
  * The skillrank proposals page (M7). Purely informational: it renders
- * ranked skill suggestions mined from local evidence, for human review
- * only. Per the product principle backing @pros/skillrank, proposals are
- * NEVER auto-installed -- there is no mechanism anywhere that changes
- * `status` away from "proposed". This page must stay provably read-only
- * by inspection: no form element, no click/submit handlers, no
- * fetch/mutation, no client component. See test/skillrank-data.test.ts's
- * static-inspection test.
+ * ranked skill suggestions mined from local evidence, for human review only.
+ * Regeneration is delegated to a small client action; this server page has
+ * no proposal application or installation behavior. Proposals are NEVER
+ * auto-installed -- there is no mechanism anywhere that changes `status`
+ * away from "proposed".
  */
 export default function SkillsPage() {
   const outDir = getSkillrankOutDir();
@@ -29,7 +28,13 @@ export default function SkillsPage() {
           <EmptyState
             icon={<Wrench className="h-8 w-8" />}
             title="No skill proposals yet"
-            description="Run `pnpm --filter @pros/skillrank run` to generate them."
+            description={
+              <>
+                Generate proposals from your local skill lock and mined vocabulary. This only creates suggestions;
+                it never installs anything or changes <code>skill-registry-lock.json</code>.
+              </>
+            }
+            action={<RegenerateAction kind="skillrank" />}
           />
         </Surface>
       </div>
@@ -40,6 +45,7 @@ export default function SkillsPage() {
     <div className="space-y-6">
       <SectionHeading
         title="Skills"
+        action={<RegenerateAction kind="skillrank" compact />}
         description={
           <>
             {generatedAt && <>Generated at: {generatedAt}. </>}

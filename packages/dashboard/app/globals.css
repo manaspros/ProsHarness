@@ -88,6 +88,10 @@
     height: 100%;
   }
 
+  html {
+    background: hsl(var(--background));
+  }
+
   body {
     /* Transparent so SilkBackground (fixed, z-0) shows through the gutters
        between panels. Surface/Panel components paint their own opaque

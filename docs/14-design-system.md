@@ -106,7 +106,7 @@ read that before building a new page. Summary:
 | `/runs/<id>/questions` | Free-text `ask_human` checkpoints specifically (distinct from the Gate 1/Gate 2 surfaces above). |
 | `/runs/<id>` | Run overview: manifest, attempts, checkpoints, health issues. |
 | `/runs` | Flat list of every run, for scanning/searching outside the board's stage grouping. |
-| `/loops`, `/schedule`, `/skills` | Read-only informational pages (mined workflow/preference proposals, scheduled-job status, ranked skill proposals) -- deliberately zero interactivity, enforced by static-inspection tests. |
+| `/loops`, `/schedule`, `/skills` | Informational pages (mined workflow/preference proposals, scheduled-job status, ranked skill proposals). Proposal application/install remains read-only; `/loops` and `/skills` also expose explicit local regeneration actions. |
 
 `⌘K` opens a command palette (shadcn `Command`) for jumping to any nav
 route or starting a new session without leaving the keyboard.
@@ -115,7 +115,7 @@ route or starting a new session without leaving the keyboard.
 
 Every stage: `pnpm --filter @pros/dashboard exec tsc --noEmit`, `next
 build`, and (for `/loops`, `/schedule`, `/skills`) the static-inspection
-tests confirming zero interactivity survived. At integration: full `pnpm -r
+tests confirming proposal application/install remains non-mutating. At integration: full `pnpm -r
 test` (all 19 packages, 73 passing in `@pros/dashboard` alone, up from 63
 before this pass) and `pnpm -r typecheck` (18 of 19 packages clean; the
 pre-existing `@pros/notify` gap from concurrent, unrelated credential work

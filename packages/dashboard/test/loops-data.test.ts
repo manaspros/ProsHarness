@@ -215,7 +215,7 @@ test("groupProposalsByKind: empty input -> both groups empty", () => {
   assert.deepEqual(preferences, []);
 });
 
-test("loops page: never contains any interactive/mutating constructs (static inspection)", async () => {
+test("loops page: keeps proposal rendering server-side and exposes only the dedicated regeneration action", async () => {
   const pagePath = path.join(import.meta.dirname, "..", "app", "loops", "page.tsx");
   const source = await readFile(pagePath, "utf8");
 
@@ -223,4 +223,11 @@ test("loops page: never contains any interactive/mutating constructs (static ins
   for (const needle of forbidden) {
     assert.ok(!source.includes(needle), `page.tsx must not contain ${JSON.stringify(needle)}`);
   }
+  assert.match(source, /RegenerateAction/);
+  assert.match(source, /PROS_MINER_OUT/);
+
+  const actionSource = await readFile(path.join(import.meta.dirname, "..", "components", "RegenerateAction.tsx"), "utf8");
+  assert.match(actionSource, /\/api\/loops\/regenerate/);
+  assert.match(actionSource, /router\.refresh\(\)/);
+  assert.match(actionSource, /local Claude Code history/);
 });

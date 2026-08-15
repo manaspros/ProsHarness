@@ -121,9 +121,9 @@ no error boundaries triggered), checked against the seeded demo data above:
 | `/runs/<id>/questions` | Scoped to `ask_human`-gate checkpoints specifically (not Gate 1/2, which live on `/plan` and `/review`) -- correctly empty for both demo runs, since neither uses a plain `ask_human` checkpoint. |
 | `/runs/demo-completed/review` | The Gate 2 surface: risk-ranked diff hunks (`src/parseConfig.ts`) with a colourised diff and a visual risk meter, the draft PR link, the focus checklist grouped by category. |
 | `/runs/<id>/graph` | Session graph as a vertical timeline diagram (per-attempt, per-kind icons) -- every node backed by a real `raw_events` row (finding, draft, critique, revise, implement, ultrareview, codex review, verify). |
-| `/loops` | Empty by design until you run `pnpm --filter @pros/miner mine` against real Claude Code history -- correctly says so rather than erroring. |
+| `/loops` | Empty until you click **Mine Claude history** (or run `pnpm --filter @pros/miner mine`) against local Claude Code history; the page explains the local-only read and correctly handles an empty result. |
 | `/schedule` | Empty until `pros schedule start` has run at least once -- correctly says so. |
-| `/skills` | Empty until `pnpm --filter @pros/skillrank run` -- correctly says so. |
+| `/skills` | Empty until you click **Generate skill proposals** (or run `pnpm --filter @pros/skillrank run`); generation only writes proposal output and never installs anything. |
 
 Nothing 500s empty either -- every page was also checked with no data at
 all (before seeding) and rendered a correct empty state, not a crash. A

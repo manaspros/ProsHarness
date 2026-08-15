@@ -13,7 +13,7 @@
  */
 import path from "node:path";
 import os from "node:os";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 export interface SkillProposalRecord {
   id: string;
@@ -27,6 +27,30 @@ export interface SkillProposalRecord {
 
 export function getSkillrankOutDir(): string {
   return process.env.PROS_SKILLRANK_OUT ?? path.join(os.homedir(), ".pros", "skillrank");
+}
+
+/**
+ * Resolves the same repository lock file used by the skillrank CLI and
+ * scheduler. Dashboard processes commonly start with packages/dashboard as
+ * their cwd, so walk upward instead of assuming cwd is the workspace root.
+ */
+export function getSkillLockFilePath(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.PROS_SKILL_LOCK_FILE) return env.PROS_SKILL_LOCK_FILE;
+
+  const start = path.resolve(env.PROS_REPO_ROOT ?? process.cwd());
+  let current = start;
+  while (true) {
+    if (existsSync(path.join(current, "skill-registry-lock.json"))) {
+      return path.join(current, "skill-registry-lock.json");
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+
+  // Preserve the CLI's predictable fallback when the lock file has not been
+  // created yet; runSkillrank treats a missing lock as no installed skills.
+  return path.join(start, "skill-registry-lock.json");
 }
 
 export interface LoadedSkillProposals {

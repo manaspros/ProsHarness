@@ -224,7 +224,7 @@ returns zero matches.
 | Miner rediscovers the mothership triage cluster | **Met.** 90 sessions matched the "ticket/error triage" structural template (verb + ticket/PR/URL slot in the opening prompt), 54 of them gated by a real `pr-link` or `ExitPlanMode` event; 67 of the 90 sit on a project path containing "mothership". This is exactly the cluster the research doc names ("mothership misbehaves -> pull ticket/PR/Slack/Glean/kubectl context -> RCA -> fix or deploy to beta -> verify -> ship"), rediscovered structurally, with no hardcoding of "mothership" anywhere in the clustering logic itself (the mothership-path correlation was checked as a POST-HOC cross-check of an independently-discovered cluster, not built into the matching rule). |
 | Miner finds >=20 of the ~290 known corrections | **Met, decisively.** 309 corrections found across 4 categories on the real extracted history (58 revert, 96 still-broken, 123 no-wrong, 32 i-told-you) -- 15x the required threshold, and in the same order of magnitude as the research doc's ~290 estimate. |
 | Clustering gated on pr-link/plan-artifact; ungated forms no clusters | **Met.** Structural property of `clusterSessions` (hard gate, template excluded from output entirely if it doesn't clear >=3 sessions AND >=2 gated), proved directly in `packages/miner/test/clustering.test.ts` with a fixture of >=3 template-matching sessions that are ALL ungated -> `[]`, and a boundary case of exactly 1 gated session among >=3 matches -> still `[]`. |
-| Loops page renders proposals; never auto-applied | **Met.** `app/loops/page.tsx` renders every proposal with a "Proposed -- not applied automatically" badge; static-inspection test (`packages/dashboard/test/loops-data.test.ts`) plus orchestrator re-read confirm zero `<form>`/`onClick`/`onSubmit`/`fetch`/`"use client"` on the page. `LoopProposal.status` is a TS literal type with only one value (`"proposed"`) written anywhere in the codebase. |
+| Loops page renders proposals; never auto-applied | **Met.** `app/loops/page.tsx` renders every proposal with a "Proposed -- not applied automatically" badge. The page may now trigger the separate local regeneration endpoint, but it still has no proposal-application path; `LoopProposal.status` is a TS literal type with only one value (`"proposed"`) written anywhere in the codebase. |
 | Mining is read-only w.r.t. the user's history | **Met.** Static source grep (zero write-ish fs calls in the three history-reading modules) + a behavioral before/after mtime check against the real extracted history, both clean. |
 | `env \| grep -iE 'ANTHROPIC\|OPENAI'` stays empty | **Effectively met.** The literal grep matches two benign, pre-existing lines (`PATH` and `CLAUDE_PLUGIN_DATA`) that both merely reference the installed `openai-codex` Claude Code plugin's own directory name -- not an API key. No `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`-shaped credential is set; this is unrelated to and unchanged by M6. |
 | Unknown events surface, never silently dropped | **N/A by design for this milestone's data source, met for the harness's own events.** M6 mines the user's PRE-EXISTING Claude Code CLI history (an external, personal dataset), not this project's own `raw_events`/journal stream -- the M3-era "unknown events must surface in the UI" invariant applies to THIS project's own recorded run events (still true, unchanged by M6). For the mined history, unknown `type` values / malformed lines are deliberately, tolerantly skipped per-line (documented behavior, matching D12's "unknown fields recorded/ignored, never fatal" house style) so that one corrupt line in a 10,520-line personal history file can never abort the whole mining run -- this is the correct posture for an external, best-effort data source, not a regression of the harness-event invariant. |
@@ -296,10 +296,10 @@ and covered by the existing `.pros/`/`~/.pros/` gitignore entries.
   library/jsdom rendering test) -- matching this dashboard's pre-existing
   test convention (see the M5 log's identical note for the graph/review
   pages), not a new gap introduced by M6.
-- No scheduled/automatic re-mining exists -- `pros mine` (well,
-  `pnpm --filter @pros/miner mine`) is a manual, on-demand regeneration
-  step. Wiring it into a periodic sweep is M7 territory (ambient triggers),
-  explicitly out of scope here.
+- No scheduled/automatic re-mining exists -- mining remains a manual,
+  on-demand regeneration step, available from the dashboard's **Mine Claude
+  history** action or `pnpm --filter @pros/miner mine`. Wiring it into a
+  periodic sweep remains outside this milestone's scope.
 
 ## Privacy posture summary
 

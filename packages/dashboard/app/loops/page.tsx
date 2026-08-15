@@ -4,18 +4,17 @@ import { getMinerOutDir, loadProposals, groupProposalsByKind, type LoopProposal 
 import { SectionHeading } from "../../components/SectionHeading";
 import { Surface } from "../../components/Surface";
 import { EmptyState } from "../../components/EmptyState";
+import { RegenerateAction } from "../../components/RegenerateAction";
 
 export const dynamic = "force-dynamic";
 
 /**
  * The learning-loop page (M6). This page is purely informational: it
- * renders proposals mined from the user's session history for human
- * review only. Per the product principle backing this page, proposals
- * are NEVER auto-applied -- there is no mechanism anywhere that changes
- * `status` away from "proposed". This page must stay provably read-only
- * by inspection: no form element, no click/submit handlers, no
- * fetch/mutation, no client component. See test/loops-data.test.ts's
- * static-inspection test.
+ * renders proposals mined from the user's session history for human review
+ * only. Regeneration is delegated to a small client action; this server page
+ * still has no proposal application or mutation behavior. Proposals are
+ * NEVER auto-applied -- there is no mechanism anywhere that changes `status`
+ * away from "proposed".
  */
 export default function LoopsPage() {
   const minerOutDir = getMinerOutDir();
@@ -29,7 +28,13 @@ export default function LoopsPage() {
           <EmptyState
             icon={<Repeat className="h-8 w-8" />}
             title="No mined proposals yet"
-            description="Run `pnpm --filter @pros/miner mine` to generate them."
+            description={
+              <>
+                Mine your local Claude Code history to generate proposals. The history is read on this machine only;
+                derived files stay in <code>PROS_MINER_OUT</code> (default <code>~/.pros/miner</code>).
+              </>
+            }
+            action={<RegenerateAction kind="miner" />}
           />
         </Surface>
       </div>
@@ -42,6 +47,7 @@ export default function LoopsPage() {
     <div className="space-y-6">
       <SectionHeading
         title="Loops"
+        action={<RegenerateAction kind="miner" compact />}
         description={
           <>
             {generatedAt && <>Generated at: {generatedAt}. </>}

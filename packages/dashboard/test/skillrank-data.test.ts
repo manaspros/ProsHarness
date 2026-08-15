@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir, homedir } from "node:os";
 import path from "node:path";
-import { getSkillrankOutDir, loadSkillProposals } from "../lib/skillrank-data.js";
+import { getSkillLockFilePath, getSkillrankOutDir, loadSkillProposals } from "../lib/skillrank-data.js";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return mkdtemp(path.join(tmpdir(), prefix));
@@ -33,6 +33,10 @@ test("getSkillrankOutDir: falls back to <HOME>/.pros/skillrank when unset", () =
     if (saved === undefined) delete process.env.PROS_SKILLRANK_OUT;
     else process.env.PROS_SKILLRANK_OUT = saved;
   }
+});
+
+test("getSkillLockFilePath: respects PROS_SKILL_LOCK_FILE", () => {
+  assert.equal(getSkillLockFilePath({ PROS_SKILL_LOCK_FILE: "/tmp/custom-skill-lock.json" }), "/tmp/custom-skill-lock.json");
 });
 
 test("loadSkillProposals: missing file -> unavailable, empty proposals", async () => {
@@ -157,7 +161,7 @@ test("loadSkillProposals: installedSlugs falls back to [] if wrong shape", async
   }
 });
 
-test("skills page: never contains any interactive/mutating constructs (static inspection)", async () => {
+test("skills page: keeps proposal rendering server-side and exposes only the dedicated regeneration action", async () => {
   const pagePath = path.join(import.meta.dirname, "..", "app", "skills", "page.tsx");
   const source = await readFile(pagePath, "utf8");
 
@@ -165,4 +169,11 @@ test("skills page: never contains any interactive/mutating constructs (static in
   for (const needle of forbidden) {
     assert.ok(!source.includes(needle), `page.tsx must not contain ${JSON.stringify(needle)}`);
   }
+  assert.match(source, /RegenerateAction/);
+  assert.match(source, /skill-registry-lock\.json/);
+
+  const actionSource = await readFile(path.join(import.meta.dirname, "..", "components", "RegenerateAction.tsx"), "utf8");
+  assert.match(actionSource, /\/api\/skills\/regenerate/);
+  assert.match(actionSource, /router\.refresh\(\)/);
+  assert.match(actionSource, /never installs a skill/);
 });

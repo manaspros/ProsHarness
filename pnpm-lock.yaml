@@ -112,12 +112,18 @@ importers:
       '@pros/index':
         specifier: workspace:*
         version: link:../index
+      '@pros/miner':
+        specifier: workspace:*
+        version: link:../miner
       '@pros/plan':
         specifier: workspace:*
         version: link:../plan
       '@pros/review':
         specifier: workspace:*
         version: link:../review
+      '@pros/skillrank':
+        specifier: workspace:*
+        version: link:../skillrank
       '@pros/triggers':
         specifier: workspace:*
         version: link:../triggers
