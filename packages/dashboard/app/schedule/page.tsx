@@ -1,4 +1,11 @@
+import { Clock } from "lucide-react";
+
 import { getScheduleStatusDir, listScheduleStatuses, type JobStatusRecord } from "../../lib/schedule-data";
+import { SectionHeading } from "../../components/SectionHeading";
+import { Surface } from "../../components/Surface";
+import { EmptyState } from "../../components/EmptyState";
+import { StatusPill, type Status } from "../../components/StatusPill";
+import { cn } from "../../lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -17,14 +24,23 @@ export default function SchedulePage() {
   const statuses = listScheduleStatuses(statusDir);
 
   return (
-    <div>
-      <h1>Scheduled jobs</h1>
-      <p>Status directory: {statusDir}</p>
+    <div className="space-y-6">
+      <SectionHeading title="Scheduled jobs" description={<>Status directory: <code>{statusDir}</code></>} />
 
       {statuses.length === 0 ? (
-        <p>No scheduled jobs have run yet. Start the loop with `pros schedule start`.</p>
+        <Surface elevation="raised">
+          <EmptyState
+            icon={<Clock className="h-8 w-8" />}
+            title="No scheduled jobs have run yet"
+            description="Start the loop with `pros schedule start`."
+          />
+        </Surface>
       ) : (
-        statuses.map((s) => <JobStatusCard key={s.name} status={s} />)
+        <div className="space-y-4">
+          {statuses.map((s) => (
+            <JobStatusCard key={s.name} status={s} />
+          ))}
+        </div>
       )}
     </div>
   );
@@ -33,46 +49,34 @@ export default function SchedulePage() {
 function JobStatusCard({ status }: { status: JobStatusRecord }) {
   const isError = status.lastStatus === "error";
   const isNeverRun = status.lastStatus === "never-run";
-
-  const badgeStyle = {
-    display: "inline-block",
-    padding: "2px 8px",
-    borderRadius: 10,
-    fontSize: 12,
-    fontWeight: "bold",
-    whiteSpace: "nowrap",
-    background: isError ? "#fdd" : isNeverRun ? "#eee" : "#dfd",
-    color: isError ? "#900" : isNeverRun ? "#444" : "#060",
-  };
+  const pillStatus: Status = isError ? "fail" : isNeverRun ? "idle" : "pass";
+  const pillLabel = isError ? "error" : isNeverRun ? "never run" : "ok";
 
   return (
-    <div
-      style={{
-        border: isError ? "1px solid #e99" : "1px solid #ddd",
-        borderRadius: 4,
-        padding: "12px 16px",
-        marginBottom: 16,
-        background: "#fff",
-      }}
+    <Surface
+      elevation="raised"
+      className={cn("space-y-2 p-5", isError && "border-status-fail/40")}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <strong>{status.name}</strong>
-        <span style={badgeStyle}>{isError ? "ERROR" : isNeverRun ? "NEVER RUN" : "OK"}</span>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <strong className="text-sm font-semibold text-foreground">{status.name}</strong>
+        <StatusPill status={pillStatus} label={pillLabel} />
       </div>
-      <p>Last run: {status.lastRunAt ?? "never"}</p>
-      <p>Next due: {status.nextDueAt ?? "n/a"}</p>
-      {typeof status.lastDurationMs === "number" && <p>Last duration: {status.lastDurationMs}ms</p>}
+      <p className="text-sm text-muted-foreground">Last run: {status.lastRunAt ?? "never"}</p>
+      <p className="text-sm text-muted-foreground">Next due: {status.nextDueAt ?? "n/a"}</p>
+      {typeof status.lastDurationMs === "number" && (
+        <p className="text-sm text-muted-foreground">Last duration: {status.lastDurationMs}ms</p>
+      )}
       {isError && status.lastError && (
-        <p style={{ color: "#900", fontWeight: "bold" }}>Error: {status.lastError}</p>
+        <p className="text-sm font-semibold text-status-fail">Error: {status.lastError}</p>
       )}
       {status.lastSummary && (
-        <>
-          <div>Last summary:</div>
-          <pre style={{ background: "#f6f6f6", padding: 8, overflowX: "auto" }}>
+        <div className="space-y-1.5 border-t border-border pt-3">
+          <div className="text-xs font-medium text-muted-foreground">Last summary</div>
+          <pre className="max-w-full overflow-x-auto rounded-md border border-border bg-surface-base p-3 font-mono text-xs text-foreground/80">
             {JSON.stringify(status.lastSummary, null, 2)}
           </pre>
-        </>
+        </div>
       )}
-    </div>
+    </Surface>
   );
 }

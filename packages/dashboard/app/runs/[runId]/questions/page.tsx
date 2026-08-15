@@ -1,9 +1,21 @@
 import path from "node:path";
+import Link from "next/link";
+import { ArrowLeft, MessageCircleQuestion } from "lucide-react";
 import { loadRunState } from "@pros/barrier";
 import { getRunsRoot } from "../../../../lib/config";
 import { ANSWER_EFFECTS, DEFAULT_ANSWER_EFFECT } from "../../../../lib/gate-actions";
+import { SectionHeading } from "../../../../components/SectionHeading";
+import { Surface } from "../../../../components/Surface";
+import { EmptyState } from "../../../../components/EmptyState";
+import { StatusPill } from "../../../../components/StatusPill";
+import { Alert } from "../../../../components/Alert";
+import { Button } from "../../../../components/ui/button";
+import { Input } from "../../../../components/ui/input";
 
 export const dynamic = "force-dynamic";
+
+const selectClass =
+  "flex h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";
 
 export default async function QuestionsPage({
   params,
@@ -17,14 +29,19 @@ export default async function QuestionsPage({
   const runsRoot = getRunsRoot();
   const runDir = path.join(runsRoot, runId);
 
+  const backLink = (
+    <Link href={`/runs/${encodeURIComponent(runId)}`} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+      <ArrowLeft className="h-3.5 w-3.5" /> run overview
+    </Link>
+  );
+
   const state = await loadRunState(runDir).catch(() => undefined);
   if (!state) {
     return (
-      <div>
-        <p>
-          <a href={`/runs/${encodeURIComponent(runId)}`}>&larr; run overview</a>
-        </p>
-        <p>Could not read this run's state.</p>
+      <div className="space-y-6">
+        {backLink}
+        <SectionHeading title="Questions" />
+        <Alert variant="error">Could not read this run&apos;s state.</Alert>
       </div>
     );
   }
@@ -32,69 +49,83 @@ export default async function QuestionsPage({
   const questions = [...state.checkpoints.values()].filter((cp) => (cp.gateType ?? "ask_human") === "ask_human");
 
   return (
-    <div>
-      <p>
-        <a href={`/runs/${encodeURIComponent(runId)}`}>&larr; run overview</a>
-      </p>
-      <h1>Questions for run {runId}</h1>
+    <div className="space-y-6">
+      {backLink}
+      <SectionHeading title="Questions" description={<code>{runId}</code>} />
 
-      {error && <div className="error-banner">Error: {error}</div>}
+      {error && <Alert variant="error">Error: {error}</Alert>}
 
       {questions.length === 0 ? (
-        <p>No ask_human checkpoints for this run.</p>
+        <Surface elevation="raised">
+          <EmptyState
+            icon={<MessageCircleQuestion className="h-8 w-8" />}
+            title="No ask_human checkpoints"
+            description="This run has no questions for a human yet."
+          />
+        </Surface>
       ) : (
-        questions.map((cp) => (
-          <div key={cp.checkpointId} style={{ border: "1px solid #ddd", borderRadius: 4, padding: 12, marginBottom: 12 }}>
-            <p>
-              <strong>Prompt:</strong> {cp.prompt}
-            </p>
-            <p>
-              Phase: <span className={`badge ${cp.phase === "parked" ? "parked" : ""}`}>{cp.phase}</span>
-              {" | Options: "}
-              {cp.options.length > 0 ? cp.options.join(", ") : "(none -- free text only)"}
-            </p>
-            {cp.answer !== undefined ? (
-              <p>
-                <strong>Answer:</strong> {cp.answer} <em>[{cp.effect}]</em>
-              </p>
-            ) : cp.phase === "parked" ? (
-              <form
-                action={`/api/runs/${encodeURIComponent(runId)}/checkpoints/${encodeURIComponent(cp.checkpointId)}/answer`}
-                method="post"
-              >
-                <input type="hidden" name="redirectTo" value={`/runs/${encodeURIComponent(runId)}/questions`} />
-                <div>
-                  {cp.options.length > 0 ? (
-                    <select name="answer" defaultValue={cp.options[0]}>
-                      {cp.options.map((opt) => (
-                        <option key={opt} value={opt}>
-                          {opt}
+        <div className="space-y-4">
+          {questions.map((cp) => (
+            <Surface key={cp.checkpointId} elevation="raised" className="space-y-3 p-5">
+              <p className="text-sm font-medium text-foreground">{cp.prompt}</p>
+
+              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                {cp.phase === "parked" && <StatusPill status="parked" />}
+                <span>
+                  Options: {cp.options.length > 0 ? cp.options.join(", ") : "(none -- free text only)"}
+                </span>
+              </div>
+
+              {cp.answer !== undefined ? (
+                <p className="text-sm">
+                  <span className="font-semibold text-foreground">Answer:</span> {cp.answer}{" "}
+                  <em className="text-muted-foreground">[{cp.effect}]</em>
+                </p>
+              ) : cp.phase === "parked" ? (
+                <form
+                  action={`/api/runs/${encodeURIComponent(runId)}/checkpoints/${encodeURIComponent(cp.checkpointId)}/answer`}
+                  method="post"
+                  className="space-y-3 border-t border-border pt-3"
+                >
+                  <input type="hidden" name="redirectTo" value={`/runs/${encodeURIComponent(runId)}/questions`} />
+                  <div className="flex flex-wrap items-center gap-2">
+                    {cp.options.length > 0 ? (
+                      <select name="answer" defaultValue={cp.options[0]} className={selectClass}>
+                        {cp.options.map((opt) => (
+                          <option key={opt} value={opt}>
+                            {opt}
+                          </option>
+                        ))}
+                      </select>
+                    ) : null}
+                    <span className="text-sm text-muted-foreground">or free text:</span>
+                    <Input
+                      type="text"
+                      name="answerFreeText"
+                      placeholder="(used if no option selected above matches)"
+                      className="max-w-sm"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-muted-foreground">Effect:</span>
+                    <select name="effect" defaultValue={DEFAULT_ANSWER_EFFECT} className={selectClass}>
+                      {ANSWER_EFFECTS.map((e) => (
+                        <option key={e} value={e}>
+                          {e}
                         </option>
                       ))}
                     </select>
-                  ) : null}
-                  {" or free text: "}
-                  <input type="text" name="answerFreeText" placeholder="(used if no option selected above matches)" />
-                </div>
-                <div style={{ marginTop: 6 }}>
-                  Effect:{" "}
-                  <select name="effect" defaultValue={DEFAULT_ANSWER_EFFECT}>
-                    {ANSWER_EFFECTS.map((e) => (
-                      <option key={e} value={e}>
-                        {e}
-                      </option>
-                    ))}
-                  </select>
-                  <button type="submit" style={{ marginLeft: 12 }}>
-                    Submit answer
-                  </button>
-                </div>
-              </form>
-            ) : (
-              <p style={{ color: "#666" }}>Not currently parked (phase: {cp.phase}) -- nothing to answer right now.</p>
-            )}
-          </div>
-        ))
+                    <Button type="submit" size="sm">
+                      Submit answer
+                    </Button>
+                  </div>
+                </form>
+              ) : (
+                <p className="text-sm text-muted-foreground">Not currently parked (phase: {cp.phase}) -- nothing to answer right now.</p>
+              )}
+            </Surface>
+          ))}
+        </div>
       )}
     </div>
   );

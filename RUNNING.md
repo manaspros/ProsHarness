@@ -104,23 +104,31 @@ Both scripts respect the same env vars as everything else
 
 ## 3. Pages, verified
 
-All render without runtime errors (200s, no error boundaries triggered),
-checked against the seeded demo data above:
+The dashboard was given a full visual/UX overhaul (dark "paper" design
+system, a Silk WebGL shader backdrop, a Linear-style sessions board, a
+`/new` trigger front door) -- see `docs/14-design-system.md` for the full
+design language and component inventory. The page tour below reflects the
+current information architecture; all render without runtime errors (200s,
+no error boundaries triggered), checked against the seeded demo data above:
 
 | Page | What it shows (with demo data) |
 |---|---|
-| `/runs` | Both demo runs, fence epoch, status badge, health. |
-| `/runs/<id>` | Run overview, manifest, attempt list. |
-| `/runs/demo-parked-gate1/plan` | Plan markdown, both Codex objections (accepted / accepted-as-risk), Approve/Amend/Reject buttons. |
+| `/` | **Home.** The Linear-style sessions board: both demo runs as cards in their derived lifecycle column (`demo-parked-gate1` in Implementing with a 2-objections risk badge, `demo-completed` in Awaiting Gate 2), keyboard-navigable, colour-coded by stage. |
+| `/new` | The trigger front door: pick/enter a repo, describe or paste a finding, choose a trigger source (Manual works end-to-end; Sweep/Linear/Slack/Granola show an honest readiness note), launch a real plan run, see what's queued/running. |
+| `/runs` | Flat list of every run, fence epoch, status badge, health -- for scanning outside the board's grouping. |
+| `/runs/<id>` | Run overview, manifest, attempt/checkpoint tabs, health issues. |
+| `/runs/demo-parked-gate1/plan` | The Gate 1 surface: plan markdown as readable prose with metadata chips, both Codex objections as severity-tagged cards (accepted / accepted-as-risk), a direct-run instruction composer, Approve/Amend/Reject. |
 | `/runs/<id>/questions` | Scoped to `ask_human`-gate checkpoints specifically (not Gate 1/2, which live on `/plan` and `/review`) -- correctly empty for both demo runs, since neither uses a plain `ask_human` checkpoint. |
-| `/runs/demo-completed/review` | Risk-ranked diff hunks (`src/parseConfig.ts`), the draft PR link, the focus checklist. |
-| `/runs/<id>/graph` | Session graph -- every node backed by a real `raw_events` row (finding, draft, critique, revise, implement, ultrareview, codex review, verify). |
+| `/runs/demo-completed/review` | The Gate 2 surface: risk-ranked diff hunks (`src/parseConfig.ts`) with a colourised diff and a visual risk meter, the draft PR link, the focus checklist grouped by category. |
+| `/runs/<id>/graph` | Session graph as a vertical timeline diagram (per-attempt, per-kind icons) -- every node backed by a real `raw_events` row (finding, draft, critique, revise, implement, ultrareview, codex review, verify). |
 | `/loops` | Empty by design until you run `pnpm --filter @pros/miner mine` against real Claude Code history -- correctly says so rather than erroring. |
 | `/schedule` | Empty until `pros schedule start` has run at least once -- correctly says so. |
 | `/skills` | Empty until `pnpm --filter @pros/skillrank run` -- correctly says so. |
 
 Nothing 500s empty either -- every page was also checked with no data at
-all (before seeding) and rendered a correct empty state, not a crash.
+all (before seeding) and rendered a correct empty state, not a crash. A
+persistent left sidebar (nav, New session, recent sessions, status counts,
+⌘K command palette) wraps every page.
 
 ---
 

@@ -1,0 +1,280 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * ProsHarness dashboard design system -- Stage 1 foundation.
+ *
+ * Palette anchors (do not drift from these):
+ *   #02010A  deepest ground
+ *   #04052E  ground / base surface
+ *   #3D2C8D  accent, deep
+ *   #916BBF  accent
+ *
+ * Tokens follow shadcn/ui's standard naming (--background, --foreground,
+ * --card, --border, --ring, ...) as HSL triples (no `hsl()` wrapper) so
+ * Tailwind classes like `bg-background` and `text-foreground` work via
+ * `hsl(var(--background))` in tailwind.config.ts.
+ *
+ * Elevation ramp (--surface-ground/base/raised/overlay) backs the
+ * Surface/Panel primitive in components/Surface.tsx: three visually
+ * distinct near-black levels, from the page ground up through cards to
+ * popovers/dialogs, each a touch lighter with a hairline top highlight.
+ */
+
+@layer base {
+  :root {
+    --background: 247 82% 3%;
+    --foreground: 250 25% 93%;
+
+    --card: 245 40% 7%;
+    --card-foreground: 250 25% 93%;
+
+    --popover: 243 36% 11%;
+    --popover-foreground: 250 25% 95%;
+
+    --primary: 267 40% 58%;
+    --primary-foreground: 247 60% 4%;
+
+    --secondary: 250 30% 14%;
+    --secondary-foreground: 250 25% 90%;
+
+    --muted: 248 28% 12%;
+    --muted-foreground: 250 14% 62%;
+
+    --accent: 250 45% 18%;
+    --accent-foreground: 267 55% 82%;
+
+    --destructive: 4 62% 45%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 250 25% 100% / 0.08;
+    --input: 250 25% 100% / 0.12;
+    --ring: 267 40% 58%;
+
+    --radius: 0.625rem;
+
+    /* Elevation ramp -- base ground behind everything, raised for cards,
+       overlay for popovers/dialogs/sheets. */
+    --surface-ground: 247 82% 3%;
+    --surface-base: 245 42% 6%;
+    --surface-raised: 244 38% 8%;
+    --surface-overlay: 243 36% 11%;
+
+    /* Status family, drawn from the theme rather than stock traffic-light
+       colours. Used by StatusPill and kept backward compatible with the
+       legacy .badge.<state> class names below. */
+    --status-parked: 38 70% 58%;
+    --status-running: 267 55% 68%;
+    --status-done: 250 14% 55%;
+    --status-idle: 250 14% 45%;
+    --status-pass: 152 45% 48%;
+    --status-fail: 4 68% 58%;
+    --status-blocked: 250 14% 40%;
+
+    --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+      Helvetica, Arial, sans-serif;
+    --font-serif: "Source Serif 4", Georgia, "Times New Roman", serif;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    /* Transparent so SilkBackground (fixed, z-0) shows through the gutters
+       between panels. Surface/Panel components paint their own opaque
+       backgrounds on top. */
+    background: transparent;
+    color: hsl(var(--foreground));
+    font-family: var(--font-sans);
+    font-size: 0.9375rem;
+    line-height: 1.6;
+  }
+}
+
+/* ---------------------------------------------------------------------- */
+/* Paper grain -- static SVG feTurbulence noise, applied as a repeating   */
+/* background-image data URI. No animation, no external assets.          */
+/* ---------------------------------------------------------------------- */
+
+.paper-grain {
+  position: relative;
+}
+
+.paper-grain::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.035;
+  mix-blend-mode: overlay;
+  border-radius: inherit;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='matrix' values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.5 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  background-repeat: repeat;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Long-form plan markdown reading surface.                               */
+/* ---------------------------------------------------------------------- */
+
+.prose-plan {
+  max-width: 72ch;
+  color: hsl(var(--foreground) / 0.92);
+  font-size: 0.9375rem;
+  line-height: 1.75;
+}
+
+.prose-plan > :first-child {
+  margin-top: 0;
+}
+
+.prose-plan h1 {
+  font-size: 1.75rem;
+  line-height: 1.3;
+  font-weight: 600;
+  margin: 2rem 0 0.75rem;
+  letter-spacing: -0.01em;
+}
+
+.prose-plan h2 {
+  font-size: 1.375rem;
+  line-height: 1.35;
+  font-weight: 600;
+  margin: 1.75rem 0 0.625rem;
+  letter-spacing: -0.01em;
+}
+
+.prose-plan h3 {
+  font-size: 1.125rem;
+  line-height: 1.4;
+  font-weight: 600;
+  margin: 1.5rem 0 0.5rem;
+}
+
+.prose-plan p {
+  margin: 0.85em 0;
+}
+
+.prose-plan ul,
+.prose-plan ol {
+  margin: 0.85em 0;
+  padding-left: 1.4em;
+}
+
+.prose-plan li {
+  margin: 0.3em 0;
+}
+
+.prose-plan li > ul,
+.prose-plan li > ol {
+  margin: 0.3em 0;
+}
+
+.prose-plan blockquote {
+  margin: 1em 0;
+  padding: 0.25em 1em;
+  border-left: 2px solid hsl(var(--primary) / 0.5);
+  color: hsl(var(--muted-foreground));
+  font-style: italic;
+}
+
+.prose-plan hr {
+  margin: 2em 0;
+  border: none;
+  border-top: 1px solid hsl(0 0% 100% / 0.08);
+}
+
+.prose-plan code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  background: hsl(0 0% 100% / 0.06);
+  border: 1px solid hsl(0 0% 100% / 0.08);
+  border-radius: 4px;
+  padding: 0.15em 0.4em;
+}
+
+.prose-plan pre {
+  margin: 1em 0;
+  padding: 0.85em 1em;
+  border-radius: var(--radius);
+  background: hsl(var(--surface-overlay));
+  border: 1px solid hsl(0 0% 100% / 0.08);
+  overflow-x: auto;
+}
+
+.prose-plan pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 0.85em;
+}
+
+.prose-plan table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 0.875em;
+}
+
+.prose-plan th,
+.prose-plan td {
+  text-align: left;
+  padding: 0.5em 0.75em;
+  border-bottom: 1px solid hsl(0 0% 100% / 0.08);
+}
+
+.prose-plan th {
+  color: hsl(var(--muted-foreground));
+  font-weight: 600;
+  background: hsl(0 0% 100% / 0.03);
+}
+
+.prose-plan a {
+  color: hsl(var(--primary));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.prose-plan strong {
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}
+
+/* ------------------------------------------------------------------------
+ * All pages have been migrated onto the real design-system primitives
+ * (Surface/Panel, StatusPill, Alert, PlanMarkdown, etc. -- see
+ * components/README.md), so the legacy inline-<style> class-name shim
+ * (nav/main/table/th/td, .warning-banner, .error-banner, .badge, and
+ * pre.plan-markdown) that used to live here has been removed. Notably, its
+ * bare `main { max-width: 1000px; margin: 0 auto; }` rule was silently
+ * capping the app shell's real <main> (app/layout.tsx) at 1000px wide --
+ * removing it is what let the sessions board use the width it actually
+ * asks for.
+ * ---------------------------------------------------------------------- */
+
+textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+button {
+  cursor: pointer;
+}
+
+code {
+  background: hsl(0 0% 100% / 0.08);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+a {
+  color: hsl(var(--primary));
+}

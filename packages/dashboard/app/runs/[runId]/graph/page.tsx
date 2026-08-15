@@ -1,6 +1,24 @@
+import Link from "next/link";
+import {
+  ArrowLeft,
+  CheckCircle2,
+  HelpCircle,
+  MessageSquare,
+  Share2,
+  Sparkles,
+  Users,
+  Wrench,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+
 import { getRunsRoot, getIndexDbPath } from "../../../../lib/config";
 import { rebuildAndOpenIndex } from "../../../../lib/db";
 import { loadSessionGraph, groupNodesByAttempt, countUnknownNodes } from "../../../../lib/graph-data";
+import { SectionHeading } from "../../../../components/SectionHeading";
+import { Surface } from "../../../../components/Surface";
+import { EmptyState } from "../../../../components/EmptyState";
+import { Alert } from "../../../../components/Alert";
+import { cn } from "../../../../lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +41,24 @@ function kindLabel(kind: string): string {
       return kind;
   }
 }
+
+const KIND_ICON: Record<string, LucideIcon> = {
+  prompt: MessageSquare,
+  tool_call: Wrench,
+  tool_result: CheckCircle2,
+  subagent: Users,
+  skill: Sparkles,
+  unknown: HelpCircle,
+};
+
+const KIND_COLOR: Record<string, string> = {
+  prompt: "border-status-running/40 bg-status-running/15 text-status-running",
+  tool_call: "border-primary/40 bg-primary/15 text-primary",
+  tool_result: "border-status-pass/40 bg-status-pass/15 text-status-pass",
+  subagent: "border-status-parked/40 bg-status-parked/15 text-status-parked",
+  skill: "border-status-idle/40 bg-status-idle/20 text-foreground",
+  unknown: "border-status-fail/40 bg-status-fail/15 text-status-fail",
+};
 
 export default async function GraphPage({ params }: { params: Promise<{ runId: string }> }) {
   const { runId } = await params;
@@ -50,64 +86,83 @@ export default async function GraphPage({ params }: { params: Promise<{ runId: s
   const bashVerbsSummary = graph.summary.bashVerbs.length > 0 ? `bash verbs: ${graph.summary.bashVerbs.join(", ")}` : "no bash calls";
 
   return (
-    <div>
-      <p>
-        <a href={`/runs/${encodeURIComponent(runId)}`}>&larr; run overview</a>
-      </p>
-      <h1>Session graph for run {runId}</h1>
+    <div className="space-y-6">
+      <Link href={`/runs/${encodeURIComponent(runId)}`} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+        <ArrowLeft className="h-3.5 w-3.5" /> run overview
+      </Link>
+
+      <SectionHeading title="Session graph" description={<code>{runId}</code>} />
 
       {unknownCount > 0 && (
-        <div className="warning-banner">
-          {unknownCount} event(s) in this run's raw log could not be parsed cleanly -- shown below as Unknown, never
-          hidden.
-        </div>
+        <Alert variant="warning" title="Unparsed events present">
+          {unknownCount} event(s) in this run&apos;s raw log could not be parsed cleanly -- shown below as Unknown, never hidden.
+        </Alert>
       )}
 
-      <p>
+      <Surface elevation="raised" className="p-5 text-sm text-muted-foreground">
         {toolCountsSummary ? `${toolCountsSummary}. ` : "No tool calls. "}
         {subagentsSummary}. {skillsSummary}. {filesSummary}. {bashVerbsSummary}.
-      </p>
+      </Surface>
 
-      <h2>Timeline ({graph.nodes.length} node(s))</h2>
-      {grouped.length === 0 ? (
-        <p>No events recorded for this run yet.</p>
-      ) : (
-        grouped.map((group) => (
-          <div key={group.attemptId}>
-            <h3>
-              Attempt <code>{group.attemptId}</code>
-            </h3>
-            <table>
-              <thead>
-                <tr>
-                  <th>seq</th>
-                  <th>kind</th>
-                  <th>label</th>
-                  <th>raw event</th>
-                </tr>
-              </thead>
-              <tbody>
-                {group.nodes.map((node) => (
-                  <tr key={node.id}>
-                    <td>{node.seq}</td>
-                    <td>
-                      <span className={node.kind === "unknown" ? "badge fail" : "badge"}>{kindLabel(node.kind)}</span>
-                    </td>
-                    <td>{node.label}</td>
-                    <td>
-                      <code>raw_events#{node.rawEventId}</code>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      <section className="space-y-4">
+        <h3 className="text-lg font-semibold tracking-tight text-foreground">
+          Timeline ({graph.nodes.length} node{graph.nodes.length === 1 ? "" : "s"})
+        </h3>
+
+        {grouped.length === 0 ? (
+          <Surface elevation="raised">
+            <EmptyState icon={<Share2 className="h-8 w-8" />} title="No events recorded" description="Nothing has happened in this run yet." />
+          </Surface>
+        ) : (
+          <div className="space-y-6">
+            {grouped.map((group) => (
+              <Surface key={group.attemptId} elevation="raised" className="p-5">
+                <h4 className="mb-4 text-sm font-semibold text-foreground">
+                  Attempt <code className="font-mono text-xs text-muted-foreground">{group.attemptId}</code>
+                </h4>
+
+                <ol className="relative space-y-4 border-l border-border pl-6">
+                  {group.nodes.map((node) => {
+                    const Icon = KIND_ICON[node.kind] ?? HelpCircle;
+                    const colorClass = KIND_COLOR[node.kind] ?? KIND_COLOR.unknown;
+                    return (
+                      <li key={node.id} className="relative">
+                        <span
+                          className={cn(
+                            "absolute -left-[calc(1.5rem+9px)] flex h-6 w-6 items-center justify-center rounded-full border",
+                            colorClass,
+                          )}
+                        >
+                          <Icon className="h-3.5 w-3.5" />
+                        </span>
+                        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                          <span className="text-xs font-mono text-muted-foreground">#{node.seq}</span>
+                          <span
+                            className={cn(
+                              "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold",
+                              colorClass,
+                            )}
+                          >
+                            {kindLabel(node.kind)}
+                          </span>
+                          <span className="text-sm text-foreground">{node.label}</span>
+                        </div>
+                        <div className="mt-0.5 text-xs text-muted-foreground">
+                          <code>raw_events#{node.rawEventId}</code>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ol>
+              </Surface>
+            ))}
           </div>
-        ))
-      )}
+        )}
+      </section>
 
-      <p>
-        <a href={`/runs/${encodeURIComponent(runId)}`}>&larr; back to run overview</a>
-      </p>
+      <Link href={`/runs/${encodeURIComponent(runId)}`} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+        <ArrowLeft className="h-3.5 w-3.5" /> back to run overview
+      </Link>
     </div>
   );
 }
