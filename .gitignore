@@ -2,6 +2,7 @@ claude-codex-backup-*.zip
 node_modules/
 dist/
 build/
+.next/
 *.tsbuildinfo
 .env
 .env.*
