@@ -60,17 +60,83 @@ packages/barrier/       extended: new JournalEntry kinds for worktree allocation
 
 | Component | Status | Notes |
 |---|---|---|
-| Adapters (`packages/adapters`) | pending | |
-| SQLite index (`packages/index`) | pending | |
-| Worktree allocator (`packages/worktree`) | pending | |
-| Fence epoch extension | pending | |
+| Adapters (`packages/adapters`) | **done** | `spawnClaude`/`spawnCodex`, tolerant NDJSON parsing, real fixtures captured live (both CLIs), snapshot tests. Commit `14444cc`. |
+| SQLite index (`packages/index`) | **done** | `rebuildIndex(dbPath, runsRoot)` over `@pros/barrier`'s `Journal.read` + `attempts/*/raw.log`; dedup via `UNIQUE(run_id,attempt_id,seq)` + `INSERT OR IGNORE`; full rebuild-from-scratch verified idempotent. Commit `67457e4`. |
+| Worktree allocator (`packages/worktree`) | **done** | Intent→act→confirm saga on top of `@pros/barrier`'s `Journal`; `reconcile()` finishes or rolls back every crash point tested. Commit `c365b6e`, fence-epoch fix in `3f7b313`. |
+| Fence epoch extension | **done** (folded into worktree + barrier) | Worktree saga now carries the run's real current epoch (was hardcoded 0 — fixed). Plan pipeline (below) also fence-checks its own transitions. |
 | Plan pipeline (`packages/plan`, `pros plan`) | pending | |
-| Model routing | pending | |
+| Model routing | pending | documented as part of the plan pipeline's adapter invocation choices |
 
-## How to run the tests
+## Adapters package details
 
-TBD once components land.
+- `packages/adapters/src/{types,claude,codex,spawn-common,index}.ts`.
+- Real fixtures captured live against `claude` 2.1.232 / `codex-cli` 0.147.0
+  (subscription auth verified empty of `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`
+  before and after): `test/fixtures/claude/claude-{pong,tool-call}.ndjson`,
+  `test/fixtures/codex/codex-{pong,tool-call}.ndjson`.
+- Real Codex tool-call fixture organically contains an `item.started` event
+  type outside the hardcoded known-type allowlist — used directly to prove
+  the tolerant-parsing invariant against real (not just synthetic) data.
+- Codex resume argument order confirmed: global flags before `resume`,
+  prompt as a trailing `-` positional to read from stdin.
+- CLI version pinning is via a separate `--version` execFile call, not
+  scraped from the event stream (neither CLI's init-style event carries a
+  stable version field).
 
-## Known gaps
+## SQLite index package details
 
-TBD.
+- `packages/index/src/{schema,rebuild,index}.ts`.
+- `rebuildIndex` is **async** (Journal.read is async — see file header
+  comment for why this is not a spec violation).
+- Full delete-and-recreate of the db file on every rebuild — a clean index,
+  not a merge with stale rows.
+- Known limitation, documented in code: raw.log has no reliable per-line
+  timestamp (falls back to file mtime) and no reliable provider/cli_version
+  without an optional sidecar file — real gaps, not silently papered over.
+- `pnpm-workspace.yaml`'s `allowBuilds.better-sqlite3` flipped to `true` so
+  pnpm allows the native build script to run (required for the dependency to
+  install at all).
+
+## Worktree allocator package details
+
+- `packages/worktree/src/allocator.ts`.
+- Saga entries live in the SAME per-run `journal.ndjson` as the checkpoint
+  barrier's own entries (`worktree_intent`/`_allocated`/`_confirmed`/`_rollback`),
+  reusing `@pros/barrier`'s `Journal`/`loadRunState` rather than inventing a
+  second durability mechanism.
+- Design choice for "git worktree add succeeded but the journal entry
+  recording it never landed": **reconcile adopts it** (treats a real,
+  git-verified worktree as legitimate work and finishes the saga) rather than
+  destroying it. Only a provably inconsistent/partial artifact (directory
+  exists but git doesn't know about it, or vice versa) is rolled back.
+- `crashAfter: "intent"|"act"|"allocated"` is a test-only injection hook on
+  `allocate()`, mirroring M1's `Journal.simulateIOFailureOnce()` pattern.
+
+## How to run the tests so far
+
+```
+pnpm -r typecheck
+pnpm -r test              # runs M1 (barrier, mcp, cli) + M2 (adapters, index, worktree) together
+pnpm --filter @pros/adapters test
+pnpm --filter @pros/index test
+pnpm --filter @pros/worktree test
+```
+
+All green as of commit `3f7b313`, including M1's 20 barrier kill-tests and
+the (occasionally-skipping-by-design, never-flaky) real-CLI mcp acceptance
+test.
+
+## Known gaps (so far)
+
+- Plan pipeline not yet built (see status table) — this is where the
+  debate-round cap, per-run token ceiling, and the stubbed
+  "critique changed the plan" test will land.
+- `packages/index`'s raw.log timestamp/provider inference is best-effort
+  (see above) — a real limitation of deriving from bare text logs with no
+  sidecar metadata, not a bug.
+- No `pros reconcile` CLI command yet wired up to `packages/worktree`'s
+  `reconcile()` — the function exists and is tested directly; a thin CLI
+  wrapper is small remaining work if time allows (not a stated M2
+  acceptance criterion, `pros reconcile` is named in the architecture doc's
+  worktree section but M2's own acceptance list doesn't require a CLI verb
+  for it, only the allocator + reconcile logic itself).
