@@ -323,6 +323,15 @@ importers:
 
   packages/schedule:
     dependencies:
+      '@pros/barrier':
+        specifier: workspace:*
+        version: link:../barrier
+      '@pros/implement':
+        specifier: workspace:*
+        version: link:../implement
+      '@pros/lease':
+        specifier: workspace:*
+        version: link:../lease
       '@pros/skillrank':
         specifier: workspace:*
         version: link:../skillrank
@@ -330,6 +339,9 @@ importers:
         specifier: workspace:*
         version: link:../triggers
     devDependencies:
+      '@pros/plan':
+        specifier: workspace:*
+        version: link:../plan
       '@types/node':
         specifier: ^22.10.0
         version: 22.20.1

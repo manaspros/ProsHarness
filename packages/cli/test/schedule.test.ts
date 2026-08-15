@@ -58,3 +58,20 @@ test("pros schedule status: no status files yet -> a clear 'never run' message, 
     await rm(statusDir, { recursive: true, force: true }).catch(() => undefined);
   }
 });
+
+test("resolveScheduleDirs: PROS_SKILL_LOCK_FILE default resolves to <repoRoot>/skill-registry-lock.json, not <HOME>/.pros/... (docs/11-project-status.md known-gap #5)", () => {
+  // No PROS_SKILL_LOCK_FILE override, no PROS_REPO_ROOT override -- repoRoot passed explicitly, as buildScheduledJobs/runScheduleStatusCommand now do.
+  const dirs = resolveScheduleDirs({ HOME: "/home/tester" } as NodeJS.ProcessEnv, "/home/manas/Code/ProsHarness");
+  assert.equal(dirs.lockFilePath, path.join("/home/manas/Code/ProsHarness", "skill-registry-lock.json"));
+
+  // An explicit PROS_SKILL_LOCK_FILE override still wins over the repoRoot-derived default.
+  const overridden = resolveScheduleDirs(
+    { HOME: "/home/tester", PROS_SKILL_LOCK_FILE: "/custom/lock.json" } as NodeJS.ProcessEnv,
+    "/home/manas/Code/ProsHarness",
+  );
+  assert.equal(overridden.lockFilePath, "/custom/lock.json");
+
+  // repoRoot itself defaults from PROS_REPO_ROOT when the second arg is omitted (buildScheduledJobs/runScheduleStatusCommand's own convention).
+  const viaEnv = resolveScheduleDirs({ HOME: "/home/tester", PROS_REPO_ROOT: "/some/repo" } as NodeJS.ProcessEnv);
+  assert.equal(viaEnv.lockFilePath, path.join("/some/repo", "skill-registry-lock.json"));
+});

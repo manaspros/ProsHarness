@@ -3,6 +3,7 @@ import { runAnswerCommand } from "./answer.js";
 import { runPlanCommand } from "./plan.js";
 import { runReconcileCommand } from "./reconcile.js";
 import { runScheduleCommand } from "./schedule.js";
+import { runImplementCommand } from "./implement.js";
 
 async function main(): Promise<void> {
   const [, , cmd, ...rest] = process.argv;
@@ -22,6 +23,11 @@ async function main(): Promise<void> {
       console.log(result);
       break;
     }
+    case "implement": {
+      const result = await runImplementCommand(rest);
+      console.log(result);
+      break;
+    }
     case "schedule": {
       const result = await runScheduleCommand(rest);
       console.log(result);
@@ -32,6 +38,7 @@ async function main(): Promise<void> {
         [
           "usage: pros answer <question-id> <choice> [--effect=continue_within_approved_plan|requires_plan_amendment|abort]",
           '       pros plan <repoRoot> "<description>" [--run-id=<id>]',
+          "       pros implement <run-id>",
           "       pros reconcile [--stale-after=<ms>]",
           "       pros schedule start [--interval=<pollIntervalMs>]",
           "       pros schedule status",

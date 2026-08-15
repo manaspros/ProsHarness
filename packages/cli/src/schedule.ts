@@ -15,7 +15,13 @@
 import path from "node:path";
 import { GranolaSource, LinearSource, SlackSource, SweepSource } from "@pros/triggers";
 import type { TriggerSource } from "@pros/triggers";
-import { listJobStatuses, makeSkillrankWeeklyJob, makeTriggerSweepJob, startSchedulerLoop } from "@pros/schedule";
+import {
+  listJobStatuses,
+  makeGate1ContinuationJob,
+  makeSkillrankWeeklyJob,
+  makeTriggerSweepJob,
+  startSchedulerLoop,
+} from "@pros/schedule";
 
 export interface ScheduleArgs {
   pollIntervalMs?: number;
@@ -42,7 +48,18 @@ function homeRoot(env: NodeJS.ProcessEnv): string {
   return env.HOME ?? "/root";
 }
 
-export function resolveScheduleDirs(env: NodeJS.ProcessEnv = process.env): ScheduleDirs {
+/**
+ * `repoRoot` defaults to `env.PROS_REPO_ROOT ?? process.cwd()` -- the same
+ * convention `buildScheduledJobs` already used for everything ELSE that
+ * needs the harness's own installation root, just not threaded into this
+ * function until now. That is the fix for docs/11-project-status.md
+ * known-gap #5: `PROS_SKILL_LOCK_FILE`'s default used to fall back to
+ * `<HOME>/.pros/skill-registry-lock.json`, which never contains the real
+ * lock file -- the real file lives at `<repoRoot>/skill-registry-lock.json`.
+ * The default now points there instead, so skillrank sees what's actually
+ * installed without requiring `PROS_SKILL_LOCK_FILE` to be set by hand.
+ */
+export function resolveScheduleDirs(env: NodeJS.ProcessEnv = process.env, repoRoot: string = env.PROS_REPO_ROOT ?? process.cwd()): ScheduleDirs {
   const home = homeRoot(env);
   return {
     runsRoot: env.PROS_RUNS_DIR ?? path.join(home, ".pros", "runs"),
@@ -50,7 +67,7 @@ export function resolveScheduleDirs(env: NodeJS.ProcessEnv = process.env): Sched
     leaseDir: env.PROS_LEASE_DIR ?? path.join(home, ".pros", "leases"),
     dedupDir: env.PROS_DEDUP_DIR ?? path.join(home, ".pros", "dedup"),
     statusDir: env.PROS_SCHEDULE_STATUS_DIR ?? path.join(home, ".pros", "schedule"),
-    lockFilePath: env.PROS_SKILL_LOCK_FILE ?? path.join(home, ".pros", "skill-registry-lock.json"),
+    lockFilePath: env.PROS_SKILL_LOCK_FILE ?? path.join(repoRoot, "skill-registry-lock.json"),
     minerOutDir: env.PROS_MINER_OUT ?? path.join(home, ".pros", "miner"),
     skillrankOutDir: env.PROS_SKILLRANK_OUT ?? path.join(home, ".pros", "skillrank"),
   };
@@ -77,8 +94,8 @@ function buildSources(env: NodeJS.ProcessEnv, repoRoot: string): TriggerSource[]
 }
 
 export function buildScheduledJobs(env: NodeJS.ProcessEnv = process.env) {
-  const dirs = resolveScheduleDirs(env);
   const repoRoot = env.PROS_REPO_ROOT ?? process.cwd();
+  const dirs = resolveScheduleDirs(env, repoRoot);
   const maxConcurrent = env.PROS_MAX_CONCURRENT ? Number(env.PROS_MAX_CONCURRENT) : 3;
   const maxTokensPerRun = env.PROS_MAX_TOKENS_PER_RUN ? Number(env.PROS_MAX_TOKENS_PER_RUN) : 200_000;
 
@@ -100,7 +117,20 @@ export function buildScheduledJobs(env: NodeJS.ProcessEnv = process.env) {
     outDir: dirs.skillrankOutDir,
   });
 
-  return { jobs: [triggerSweepJob, skillrankJob], statusDir: dirs.statusDir };
+  // Same lease dir/maxConcurrent/maxTokensPerRun the ambient trigger sweep
+  // uses -- one global concurrency budget (docs/00-decisions.md D21), not a
+  // separate mechanism for Gate 2 continuation.
+  const gate1ContinuationJob = makeGate1ContinuationJob({
+    runsRoot: dirs.runsRoot,
+    repoRoot,
+    leaseDir: dirs.leaseDir,
+    maxConcurrent,
+    maxTokensPerRun,
+    ntfyUrl: env.PROS_NTFY_URL,
+    intervalMs: env.PROS_GATE1_CONTINUATION_INTERVAL_MS ? Number(env.PROS_GATE1_CONTINUATION_INTERVAL_MS) : undefined,
+  });
+
+  return { jobs: [triggerSweepJob, skillrankJob, gate1ContinuationJob], statusDir: dirs.statusDir };
 }
 
 export async function runScheduleStartCommand(argv: string[]): Promise<string> {
@@ -126,7 +156,7 @@ function formatStatusLine(status: Awaited<ReturnType<typeof listJobStatuses>>[nu
 }
 
 export async function runScheduleStatusCommand(_argv: string[], env: NodeJS.ProcessEnv = process.env): Promise<string> {
-  const dirs = resolveScheduleDirs(env);
+  const dirs = resolveScheduleDirs(env, env.PROS_REPO_ROOT ?? process.cwd());
   const statuses = await listJobStatuses(dirs.statusDir);
   if (statuses.length === 0) {
     return `no scheduled jobs have ever run yet (statusDir=${dirs.statusDir})`;
