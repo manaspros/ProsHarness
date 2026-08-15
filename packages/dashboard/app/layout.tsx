@@ -79,6 +79,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <nav>
           <a href="/runs">Runs</a>
+          <a href="/loops">Loops</a>
         </nav>
         <main>{children}</main>
       </body>
