@@ -171,10 +171,16 @@ importers:
       '@pros/barrier':
         specifier: workspace:*
         version: link:../barrier
+      '@pros/notify':
+        specifier: workspace:*
+        version: link:../notify
       '@pros/worktree':
         specifier: workspace:*
         version: link:../worktree
     devDependencies:
+      '@pros/index':
+        specifier: workspace:*
+        version: link:../index
       '@types/node':
         specifier: ^22.10.0
         version: 22.20.1

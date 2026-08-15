@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { Journal } from "@pros/barrier";
+import { Barrier, Journal } from "@pros/barrier";
 import type { ModelRunOptions, ModelRunResult, ModelSession } from "@pros/plan";
 import { runPlanCommand } from "../src/plan.js";
 
@@ -86,6 +86,26 @@ test("pros plan: end-to-end with fake sessions + a real worktree allocation", as
     assert.ok(kinds.includes("critique_objections"));
     assert.ok(kinds.includes("plan_finalized"));
     assert.ok(!kinds.includes("debate_capped"), "converged naturally, should not be capped");
+
+    // M3: the run must now ALSO be parked at Gate 1 -- runPlanPipeline wires
+    // finding -> debate -> plan_finalized -> parkForGate1 end to end.
+    assert.ok(kinds.includes("checkpoint_requested"));
+    assert.ok(kinds.includes("parked"));
+    assert.match(output, /checkpoint:/);
+    assert.match(output, /awaiting Gate 1 approval/);
+    const questionIdMatch = output.match(/pros answer (\S+)/);
+    assert.ok(questionIdMatch, "output must print the questionId pros answer needs");
+
+    const barrier = await Barrier.open(runDir, runId);
+    try {
+      const state = barrier.getState();
+      const parkedCps = [...state.checkpoints.values()].filter((cp) => cp.phase === "parked");
+      assert.equal(parkedCps.length, 1);
+      assert.equal(parkedCps[0]!.gateType, "plan_approval");
+      assert.equal(parkedCps[0]!.questionId, questionIdMatch![1]);
+    } finally {
+      await barrier.close();
+    }
 
     const worktreeConfirmedIdx = kinds.indexOf("worktree_confirmed");
     const findingIdx = kinds.indexOf("finding_recorded");

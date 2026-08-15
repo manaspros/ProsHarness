@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { open, rename, mkdir } from "node:fs/promises";
 import path from "node:path";
-import { Journal, loadRunState } from "@pros/barrier";
+import { Barrier, Journal, loadRunState } from "@pros/barrier";
+import { wireNtfyNotifications } from "@pros/notify";
 import { WorktreeAllocator } from "@pros/worktree";
 import type { ModelSession } from "./model-session.js";
 import { RealClaudeSession, RealCodexSession } from "./real-sessions.js";
@@ -17,6 +18,12 @@ export interface PlanPipelineOptions {
   runId?: string;
   claudeSession?: ModelSession;
   codexSession?: ModelSession;
+  /**
+   * Passed straight through to `wireNtfyNotifications({ url })`. If
+   * undefined, `sendNtfy` itself falls back to `process.env.PROS_NTFY_URL`
+   * -- the fallback lives there, not here, so this stays a thin pass-through.
+   */
+  ntfyUrl?: string;
 }
 
 export interface PlanPipelineResult {
@@ -26,6 +33,12 @@ export interface PlanPipelineResult {
   debate: DebateResult;
   planMarkdownPath: string;
   objectionsJsonPath: string;
+  /** The Gate 1 checkpoint id this run parked under -- see Barrier.parkForGate1. */
+  checkpointId: string;
+  /** The question id `pros answer <questionId> <choice> --effect=...` needs to resolve Gate 1. */
+  questionId: string;
+  /** True once parkForGate1 has durably recorded `parked` for this run. */
+  parked: boolean;
 }
 
 /** Atomic temp-write + rename + fsync(file) + fsync(dir) -- same durability discipline as barrier's manifest.ts / worktree's allocator.ts. Exported so gate1.ts (plan editing, M3) can reuse it rather than duplicate it. */
@@ -100,6 +113,56 @@ export async function runPlanPipeline(opts: PlanPipelineOptions): Promise<PlanPi
     JSON.stringify({ objections: debate.allObjections, unresolved: debate.unresolvedObjections }, null, 2),
   );
 
+  // Gate 1: park the run for human plan approval now that plan_finalized has
+  // landed. No live attempt/guardian exists at this point (finding/debate
+  // were one-shot ModelSession.run() calls) -- see Barrier.parkForGate1's
+  // doc comment for why this is the additive, guardian-quiesce-skipping
+  // parking path rather than the ask_human/requestCheckpoint one.
+  //
+  // idempotencyKey is deliberately deterministic (runId + plan version, not
+  // randomUUID()) so that a crash-and-retry of the WHOLE pipeline for the
+  // same run/version can never mint a second Gate 1 checkpoint --
+  // parkForGate1's own idempotencyIndex lookup then makes a replay a no-op
+  // that returns the original checkpointId.
+  const barrier = await Barrier.open(runDir, runId);
+  let checkpointId: string;
+  let questionId: string;
+  try {
+    // Fire-and-forget notification wiring: onParked's listener is a detached
+    // microtask (see Barrier.fireParked), so a hung/unreachable ntfy target
+    // can never delay or block parkForGate1 below -- proven in
+    // packages/notify/test/barrier-integration.test.ts and re-proven against
+    // the real pipeline in gate1-e2e.test.ts.
+    const unsubscribe = wireNtfyNotifications(barrier, { url: opts.ntfyUrl });
+    try {
+      const unresolvedCount = debate.unresolvedObjections.length;
+      const totalCount = debate.allObjections.length;
+      const freshQuestionId = randomUUID();
+      const idempotencyKey = `gate1-${runId}-v${debate.finalPlan.version}`;
+      const result = await barrier.parkForGate1({
+        cwd: allocation.path,
+        prompt: `Plan for run ${runId}: ${finding.title}. ${totalCount} objections (${unresolvedCount} unresolved).`,
+        options: ["approve", "amend", "reject"],
+        questionId: freshQuestionId,
+        idempotencyKey,
+        planRef: { planId: debate.finalPlan.planId, version: debate.finalPlan.version },
+      });
+      checkpointId = result.checkpointId;
+      // On a fresh park this IS freshQuestionId; on a replayed/idempotent
+      // call (same idempotencyKey already recorded) parkForGate1 returns the
+      // ORIGINAL checkpointId, whose questionId is whatever was minted the
+      // first time -- never the one just generated here. Read it back from
+      // state rather than assuming freshQuestionId, so a retried pipeline
+      // call always reports the question id that is actually resolvable via
+      // `pros answer`.
+      questionId = barrier.getState().checkpoints.get(checkpointId)?.questionId ?? freshQuestionId;
+    } finally {
+      unsubscribe();
+    }
+  } finally {
+    await barrier.close();
+  }
+
   return {
     runId,
     worktreePath: allocation.path,
@@ -107,5 +170,8 @@ export async function runPlanPipeline(opts: PlanPipelineOptions): Promise<PlanPi
     debate,
     planMarkdownPath,
     objectionsJsonPath,
+    checkpointId,
+    questionId,
+    parked: true,
   };
 }

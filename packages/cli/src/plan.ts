@@ -54,5 +54,7 @@ export async function runPlanCommand(argv: string[], envOverrides: Partial<PlanP
     `plan written: ${result.planMarkdownPath}`,
     `objections written: ${result.objectionsJsonPath}`,
     objectionsSummary(result),
+    `checkpoint: ${result.checkpointId}`,
+    `awaiting Gate 1 approval -- run: pros answer ${result.questionId} <approve|amend|reject> --effect=<continue_within_approved_plan|requires_plan_amendment|abort>`,
   ].join("\n");
 }

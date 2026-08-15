@@ -15,11 +15,13 @@
   "dependencies": {
     "@pros/barrier": "workspace:*",
     "@pros/adapters": "workspace:*",
-    "@pros/worktree": "workspace:*"
+    "@pros/worktree": "workspace:*",
+    "@pros/notify": "workspace:*"
   },
   "devDependencies": {
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
-    "@types/node": "^22.10.0"
+    "@types/node": "^22.10.0",
+    "@pros/index": "workspace:*"
   }
 }
