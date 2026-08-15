@@ -246,6 +246,19 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
+  packages/miner:
+    dependencies:
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.12
+
   packages/notify:
     devDependencies:
       '@pros/barrier':
