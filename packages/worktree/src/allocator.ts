@@ -41,7 +41,7 @@ import { mkdir, open, rename, readdir, rm, stat, realpath } from "node:fs/promis
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { Journal, type JournalEntry } from "@pros/barrier";
+import { Journal, loadRunState, type JournalEntry } from "@pros/barrier";
 
 const execFileAsync = promisify(execFile);
 
@@ -158,11 +158,19 @@ export class WorktreeAllocator {
     const worktreePath = path.join(this.opts.worktreesRoot, `${sanitizeSegment(runId)}-${allocationId}`);
     const runDir = this.runDir(runId);
     const journal = await Journal.open(runDir);
+    // Fence epoch is a monotonic property of the RUN (docs/03-architecture.md
+    // "fencing, not just leases" -- every transition, MCP call, verdict and
+    // PR op carries the current fence epoch). Worktree allocation is a run
+    // transition too, so it must carry the run's real current epoch, not a
+    // hardcoded 0 -- otherwise a stale-fence check downstream could never
+    // distinguish an allocation from before vs. after an amendment/recovery
+    // bump. Re-derived by replaying the journal, same as Barrier does.
+    const fenceEpoch = (await loadRunState(runDir)).fenceEpoch;
 
     // 1. Intent -- must be fsynced before any git command runs.
     await journal.append({
       runId,
-      fenceEpoch: 0,
+      fenceEpoch,
       kind: "worktree_intent",
       allocationId,
       repoRoot: this.opts.repoRoot,
@@ -182,7 +190,7 @@ export class WorktreeAllocator {
     const baseSha = (await git(worktreePath, ["rev-parse", "HEAD"])).trim();
     await journal.append({
       runId,
-      fenceEpoch: 0,
+      fenceEpoch,
       kind: "worktree_allocated",
       allocationId,
       baseSha,
@@ -193,7 +201,7 @@ export class WorktreeAllocator {
 
     // 3. Confirm.
     await writeActiveWorktreeRecord(runDir, { allocationId, runId, path: worktreePath, branch, baseSha });
-    await journal.append({ runId, fenceEpoch: 0, kind: "worktree_confirmed", allocationId });
+    await journal.append({ runId, fenceEpoch, kind: "worktree_confirmed", allocationId });
 
     return { allocationId, runId, path: worktreePath, branch, baseSha };
   }
@@ -318,6 +326,7 @@ export class WorktreeAllocator {
       }
 
       const journal = await Journal.open(runDir);
+      const currentFenceEpoch = (await loadRunState(runDir)).fenceEpoch;
 
       for (const [allocationId, group] of byAllocation) {
         const intent = group.find((e) => e.kind === "worktree_intent") as
@@ -349,7 +358,7 @@ export class WorktreeAllocator {
             baseSha = (await git(intent.worktreePath, ["rev-parse", "HEAD"])).trim();
             await journal.append({
               runId,
-              fenceEpoch: 0,
+              fenceEpoch: currentFenceEpoch,
               kind: "worktree_allocated",
               allocationId,
               baseSha,
@@ -364,7 +373,7 @@ export class WorktreeAllocator {
             branch: intent.branch,
             baseSha,
           });
-          await journal.append({ runId, fenceEpoch: 0, kind: "worktree_confirmed", allocationId });
+          await journal.append({ runId, fenceEpoch: currentFenceEpoch, kind: "worktree_confirmed", allocationId });
           report.finished.push(allocationId);
         } else {
           const reason =
@@ -373,7 +382,7 @@ export class WorktreeAllocator {
               : "partial/inconsistent disk state: worktree or branch missing/corrupt";
           if (dirExists) await this.removeWorktreeForcibly(intent.repoRoot, intent.worktreePath);
           if (hasBranch) await this.deleteBranch(intent.repoRoot, intent.branch);
-          await journal.append({ runId, fenceEpoch: 0, kind: "worktree_rollback", allocationId, reason });
+          await journal.append({ runId, fenceEpoch: currentFenceEpoch, kind: "worktree_rollback", allocationId, reason });
           report.rolledBack.push(allocationId);
         }
       }
