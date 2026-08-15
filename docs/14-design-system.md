@@ -123,3 +123,67 @@ is untouched, per the brief). Every route was screenshotted against seeded
 demo data (`demo-parked-gate1`, `demo-completed`) at both a standard and a
 wide viewport and visually inspected -- this is how the `main { max-width:
 1000px }` legacy-CSS bug above was actually caught, not by reading code.
+
+## Post-redesign QA pass
+
+A follow-up pass, done after the redesign above landed (commit `195bcc7`)
+and after the zero-token trigger-source rework (commit `d08e5cb`, see
+`docs/13-zero-token-rework.md`). Every route was re-screenshotted with
+Playwright/Chromium at 1600x1000 and 1280x800 against freshly reseeded demo
+data, and every screenshot was actually read, not just captured. Four real
+defects were found and fixed; one gap (the `/new` trigger sources going
+stale against the landed MCP work) was reconciled.
+
+**Fixed:**
+
+1. **Plan page objections were unreadable.** `ObjectionCard`
+   (`app/runs/[runId]/plan/page.tsx`) truncated the objection claim to a
+   single line with CSS `truncate`, and the expanded content never repeated
+   it -- so a reviewer could never read the full objection on the app's most
+   important decision surface. Changed to `whitespace-normal break-words`
+   so the full claim always wraps and reads in full.
+2. **The sessions board clipped cards with zero scroll affordance.**
+   `BoardClient`'s 7 fixed-width columns scroll horizontally, but at common
+   viewport widths only 3-4 fit and a card could be hard-clipped mid-card
+   with no visual signal more columns existed off-screen. Added a
+   scroll-position-aware right-edge fade (`components/board/BoardClient.tsx`)
+   that appears only when there's more to scroll to.
+3. **A false "unhealthy" alarm on every completed run.**
+   `lib/health.ts`'s hand-maintained `KNOWN_JOURNAL_KINDS` predates the Gate
+   2/M4 pipeline and was missing `verify_verdict`, `review_completed`,
+   `pr_create_intent`, `pr_created` -- kinds `packages/implement` legitimately
+   writes and this same dashboard's `board-data.ts`/`review-data.ts` already
+   render correctly. Every successfully-completed run showed a large red
+   "may be INCOMPLETE -- do not treat as healthy" banner for no real reason.
+   Added the missing kinds; the banner now only fires on genuine gaps.
+4. **Next's default 404 was unstyled and low-contrast.** Any stale/guessed
+   route (e.g. the old top-level `/questions`, which is actually per-run at
+   `/runs/<id>/questions`) fell through to Next's built-in "This page could
+   not be found," dark grey on near-black. Added `app/not-found.tsx` using
+   the existing `EmptyState`/`Surface` components so a 404 reads as an
+   on-brand, legible empty state with a way back to Sessions.
+
+**Reconciled:** `/new`'s trigger-source tabs (Sweep/Linear/Slack/Granola)
+were still all blanket-labelled "not wired up from this UI yet," which
+`d08e5cb` made factually wrong -- those sources have real, credential-free
+(Sweep) or MCP-backed (Linear/Slack/Granola) `fetchSignals()` paths. `/new`
+now has a "Scan for TODOs"/"Scan Linear issues"/etc. action per non-manual
+tab (`app/new/NewSessionForm.tsx`, new `app/api/new/scan/route.ts`) that
+runs the real source server-side and lets the user pick a found signal to
+pre-fill the finding description, then launch through the existing
+confirm-gated manual flow. Sweep's scan is local/free and runs without
+confirmation; Linear/Slack/Granola's scan spends a real read-only Claude/MCP
+call and is gated behind its own confirmation dialog. A thrown
+"MCP not connected" error from a source is surfaced verbatim to the user
+instead of a generic message. Verified via `pnpm --filter @pros/dashboard
+test`/`typecheck`, a real (local-only) sweep scan against this repo, and
+reading the Linear/Slack/Granola tab copy -- never by triggering a real
+Linear/Slack/Granola/MCP call, per the hard constraint against contacting
+external services during this pass.
+
+**Verification:** `pnpm -r test` -- 320 passing, 1 skipped (the pre-existing
+self-flaking real-`claude`-CLI acceptance test in `@pros/plan`, confirmed
+flaky by immediate retry, not a regression), 0 failing, across all 19
+packages. `pnpm -r typecheck` -- 18/18 typechecked packages clean. Every
+route re-screenshotted post-fix and re-read to confirm each defect above is
+actually gone, not just changed.

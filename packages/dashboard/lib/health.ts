@@ -56,6 +56,13 @@ export const KNOWN_JOURNAL_KINDS: ReadonlySet<string> = new Set([
   "plan_finalized",
   "plan_edited",
   "hook_payload_received",
+  // Written by packages/implement's Gate 2 / M4 pipeline (src/pipeline.ts),
+  // not (yet) part of @pros/barrier's JournalEntry union -- this dashboard's
+  // board-data.ts and review-data.ts already understand and render these.
+  "verify_verdict",
+  "review_completed",
+  "pr_create_intent",
+  "pr_created",
 ]);
 
 export interface HealthIssue {

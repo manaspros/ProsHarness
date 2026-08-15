@@ -32,6 +32,34 @@ export function BoardClient({ columns }: { columns: BoardColumn[] }) {
     row: 0,
   });
 
+  // Right-edge fade affordance: only 3-4 of the (often 7) fixed-width
+  // columns fit at common viewport widths, and the row scrolls
+  // horizontally with no native scrollbar visible -- so we show a fade
+  // whenever there's more content to the right, and hide it once scrolled
+  // to the end (or if everything already fits).
+  const [showRightFade, setShowRightFade] = React.useState(false);
+
+  const updateFade = React.useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const remaining = el.scrollWidth - el.scrollLeft - el.clientWidth;
+    setShowRightFade(remaining > 1);
+  }, []);
+
+  React.useEffect(() => {
+    updateFade();
+    const el = containerRef.current;
+    if (!el) return;
+    const onScroll = () => updateFade();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    const onResize = () => updateFade();
+    window.addEventListener("resize", onResize);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [updateFade, columns]);
+
   function focusCard(col: number, row: number) {
     const el = containerRef.current?.querySelector<HTMLAnchorElement>(
       `[data-board-card][data-col="${col}"][data-row="${row}"]`,
@@ -82,37 +110,45 @@ export function BoardClient({ columns }: { columns: BoardColumn[] }) {
   }
 
   return (
-    <div
-      ref={containerRef}
-      onKeyDown={onKeyDown}
-      onFocus={onFocus}
-      className="flex h-full min-h-0 flex-1 gap-4 overflow-x-auto pb-2"
-    >
-      {columns.map((column, colIndex) => (
-        <div key={column.stage} className="flex h-full w-72 shrink-0 flex-col">
-          <div className="mb-2 flex shrink-0 items-baseline justify-between px-1">
-            <h3 className="text-sm font-semibold text-foreground">{STAGE_LABELS[column.stage]}</h3>
-            <span className="text-xs text-muted-foreground">{column.cards.length}</span>
+    <div className="relative h-full min-h-0 flex-1">
+      <div
+        ref={containerRef}
+        onKeyDown={onKeyDown}
+        onFocus={onFocus}
+        className="flex h-full min-h-0 flex-1 gap-4 overflow-x-auto pb-2"
+      >
+        {columns.map((column, colIndex) => (
+          <div key={column.stage} className="flex h-full w-72 shrink-0 flex-col">
+            <div className="mb-2 flex shrink-0 items-baseline justify-between px-1">
+              <h3 className="text-sm font-semibold text-foreground">{STAGE_LABELS[column.stage]}</h3>
+              <span className="text-xs text-muted-foreground">{column.cards.length}</span>
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pb-4 pr-1">
+              {column.cards.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
+                  No sessions
+                </div>
+              ) : (
+                column.cards.map((card, rowIndex) => (
+                  <BoardCard
+                    key={card.runId}
+                    data={card}
+                    colIndex={colIndex}
+                    rowIndex={rowIndex}
+                    tabIndex={active.col === colIndex && active.row === rowIndex ? 0 : -1}
+                  />
+                ))
+              )}
+            </div>
           </div>
-          <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pb-4 pr-1">
-            {column.cards.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
-                No sessions
-              </div>
-            ) : (
-              column.cards.map((card, rowIndex) => (
-                <BoardCard
-                  key={card.runId}
-                  data={card}
-                  colIndex={colIndex}
-                  rowIndex={rowIndex}
-                  tabIndex={active.col === colIndex && active.row === rowIndex ? 0 : -1}
-                />
-              ))
-            )}
-          </div>
-        </div>
-      ))}
+        ))}
+      </div>
+      {showRightFade && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 right-0 w-16 bg-gradient-to-l from-surface-base to-transparent"
+        />
+      )}
     </div>
   );
 }

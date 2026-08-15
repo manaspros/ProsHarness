@@ -26,12 +26,17 @@
  * `/runs/<runId>` right away and let that page's own polling reflect
  * progress as journal entries land.
  *
- * Only the "manual" trigger source is wired here. Sweep/Linear/Slack/
- * Granola sources (packages/triggers/src/sources/*.ts) are read-only
- * fixture/MCP-driven adapters meant for the ambient trigger daemon, not
- * something this route re-derives credentials/MCP wiring for -- see each
- * source file's own header. Requesting one of those returns an honest
- * "not wired yet" response instead of silently no-oping as if it launched.
+ * Only the "manual" trigger source actually launches a plan run here.
+ * Sweep/Linear/Slack/Granola are real, wired sources (see
+ * packages/triggers/src/sources/*.ts), but this route deliberately does not
+ * re-derive their fetch here -- the dashboard's /new form uses the sibling
+ * `/api/new/scan` route (POST { repoRoot, source }) to actually run one of
+ * those sources' `fetchSignals()` for real, lets the human pick a finding
+ * to pre-fill the description, and then submits *that* through this same
+ * manual flow (`source: "manual"`) to actually launch. Requesting a
+ * non-manual source directly against *this* route still returns an honest
+ * message rather than silently no-oping, since this route was never meant
+ * to be the one that runs those sources.
  */
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -43,13 +48,13 @@ export type TriggerSourceId = "manual" | "sweep" | "linear" | "slack" | "granola
 
 const NOT_WIRED_REASONS: Record<Exclude<TriggerSourceId, "manual">, string> = {
   sweep:
-    "not wired yet -- sweep requires running the trigger daemon against a real repo tree (packages/triggers/src/sources/sweep.ts) to produce a Signal; this UI does not run that scan for you yet.",
+    "use the \"Scan for TODOs\" action on the Sweep tab instead -- it runs the real local scan (packages/triggers/src/sources/sweep.ts) via /api/new/scan and lets you pick a finding to launch with.",
   linear:
-    "not wired yet -- Linear requires either a Linear MCP server already connected in this environment or a PROS_LINEAR_API_KEY + apiUrl fallback (packages/triggers/src/sources/linear.ts); this UI doesn't set that up.",
+    "use the scan action on the Linear tab instead -- it runs the real Linear MCP fetch (packages/triggers/src/sources/linear.ts) via /api/new/scan and lets you pick an issue to launch with.",
   slack:
-    "not wired yet -- Slack requires either a Slack MCP server already connected in this environment or an API-key fallback (packages/triggers/src/sources/slack.ts); this UI doesn't set that up.",
+    "use the scan action on the Slack tab instead -- it runs the real Slack MCP fetch (packages/triggers/src/sources/slack.ts) via /api/new/scan and lets you pick a message to launch with.",
   granola:
-    "not wired yet -- Granola requires an MCP server already connected in this environment (packages/triggers/src/sources/granola.ts); this UI doesn't set that up.",
+    "use the scan action on the Granola tab instead -- it runs the real Granola MCP fetch (packages/triggers/src/sources/granola.ts) via /api/new/scan and lets you pick a note to launch with.",
 };
 
 function getWorktreesRoot(env: NodeJS.ProcessEnv = process.env): string {

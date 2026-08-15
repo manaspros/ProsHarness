@@ -327,10 +327,12 @@ function ObjectionCard({ objection, jumpTargetId }: { objection: ObjectionRow; j
   const status = SEVERITY_STATUS[severity] ?? "idle";
   return (
     <Collapsible defaultOpen className="rounded-md border border-border bg-surface-base/60 p-3">
-      <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 text-left">
-        <span className="flex min-w-0 items-center gap-2">
+      <CollapsibleTrigger className="flex w-full items-start justify-between gap-2 text-left">
+        <span className="flex min-w-0 items-start gap-2">
           <StatusPill status={status} label={severity} />
-          <span className="truncate text-sm font-medium text-foreground">{objection.claim ?? "(no claim recorded)"}</span>
+          <span className="whitespace-normal break-words text-sm font-medium text-foreground">
+            {objection.claim ?? "(no claim recorded)"}
+          </span>
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent className="mt-2 space-y-2">
