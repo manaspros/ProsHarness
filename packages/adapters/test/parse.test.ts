@@ -4,14 +4,14 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseClaudeLine } from "../src/claude.js";
-import { parseCodexLine } from "../src/codex.js";
+import { buildCodexArgs, parseCodexLine } from "../src/codex.js";
 import type { ParseStatus } from "../src/types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = join(__dirname, "fixtures");
 
 const KNOWN_CLAUDE_TYPES = new Set(["rate_limit_event", "system", "assistant", "user", "result"]);
-const KNOWN_CODEX_TYPES = new Set(["thread.started", "turn.started", "item.completed", "turn.completed"]);
+const KNOWN_CODEX_TYPES = new Set(["thread.started", "turn.started", "item.completed", "turn.completed", "turn.failed"]);
 
 function fixtureFiles(provider: "claude" | "codex"): string[] {
   const dir = join(FIXTURES_DIR, provider);
@@ -91,6 +91,19 @@ test("synthetic unknown_type line never throws and preserves raw", () => {
     assert.equal(parsed.type, "some_totally_new_event_type");
     assert.deepEqual(parsed.data, { type: "some_totally_new_event_type", foo: "bar" });
   }
+});
+
+test("codex turn.failed is recognized and retains its failure payload", () => {
+  const raw = '{"type":"turn.failed","error":{"message":"approval unavailable"}}';
+  const parsed = parseCodexLine(raw, 0);
+  assert.equal(parsed.parseStatus, "ok");
+  assert.equal(parsed.type, "turn.failed");
+  assert.deepEqual(parsed.data, { type: "turn.failed", error: { message: "approval unavailable" } });
+});
+
+test("buildCodexArgs enables unattended approvals/sandbox bypass when requested", () => {
+  assert.ok(!buildCodexArgs({}).includes("--dangerously-bypass-approvals-and-sandbox"));
+  assert.ok(buildCodexArgs({ dangerouslySkipPermissions: true }).includes("--dangerously-bypass-approvals-and-sandbox"));
 });
 
 test("synthetic malformed line never throws and preserves raw, no data", () => {

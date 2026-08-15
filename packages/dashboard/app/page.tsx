@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { ArrowUpRight, CircleAlert, Layers3, Plus, RotateCcw } from "lucide-react";
 
-import { getRunsRoot, getIndexDbPath } from "@/lib/config";
+import { getDefaultRepoRoot, getRunsRoot, getIndexDbPath } from "@/lib/config";
 import { listRuns } from "@/lib/list-runs";
 import { rebuildAndOpenIndex } from "@/lib/db";
 import { rebuildHealthIssues, isHealthy } from "@/lib/health";
@@ -22,6 +22,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { Surface } from "@/components/Surface";
 import { Button } from "@/components/ui/button";
 import { BoardClient, type BoardColumn } from "@/components/board/BoardClient";
+import { WorkspaceClient } from "@/components/WorkspaceClient";
 import type { Status } from "@/components/StatusPill";
 import type { BoardCardData } from "@/components/board/BoardCard";
 
@@ -46,8 +47,9 @@ const STAGE_PILL_STATUS: Record<BoardStage, Status> = {
 
 function hrefForStage(runId: string, stage: BoardStage): string {
   const id = encodeURIComponent(runId);
+  if (stage === "planning") return `/runs/${id}/plan?pending=1`;
   if (stage === "awaiting_gate1") return `/runs/${id}/plan`;
-  if (stage === "awaiting_gate2" || stage === "shipped") return `/runs/${id}/review`;
+  if (stage === "awaiting_gate2" || stage === "shipped") return `/pr-checks/${id}`;
   return `/runs/${id}`;
 }
 
@@ -133,6 +135,8 @@ export default async function HomePage() {
         </Button>
       </div>
 
+      <WorkspaceClient defaultRepoRoot={getDefaultRepoRoot()} />
+
       {totalRuns > 0 && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Surface elevation="base" grain={false} className="flex items-center gap-3 p-3.5">
@@ -169,7 +173,7 @@ export default async function HomePage() {
         <EmptyState
           icon={<RotateCcw className="h-8 w-8" />}
           title="No sessions yet"
-          description="Start one to see it move through the pipeline here: finding, planning, awaiting Gate 1, implementing, verifying, awaiting Gate 2, PR opened."
+          description="Start one to see it move through the pipeline here: finding, planning, Review plan, implementing, verifying, PR check, PR opened."
           action={
             <Button asChild>
               <Link href="/new">Start a session</Link>

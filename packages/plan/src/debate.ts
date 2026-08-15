@@ -63,6 +63,9 @@ export interface RunDebateOptions {
   runDir: string;
   roundCap?: number;
   tokenCeiling?: number;
+  dangerouslySkipPermissions?: boolean;
+  /** Maps each model attempt id to its live stream-json log path. */
+  rawLogPathForAttempt?: (attemptId: string) => string;
 }
 
 function addUsage(a: ModelUsage, b: ModelUsage): ModelUsage {
@@ -133,13 +136,21 @@ export async function runDebate(opts: RunDebateOptions): Promise<DebateResult> {
   const codexSession = trackingSession(opts.codexSession, usageSink);
   const allObjections: Objection[] = [];
   let cappedReason: string | undefined;
+  const rawLogPath = (attemptId: string): string | undefined => opts.rawLogPathForAttempt?.(attemptId);
 
   // Step 2: genuinely concurrent, independent first opinions.
   const [plan, assessmentResult] = await Promise.all([
-    draftPlan(claudeSession, { cwd: opts.cwd, finding: opts.finding, attemptId: `${opts.attemptIdPrefix}-draft-v1` }),
+    draftPlan(claudeSession, {
+      cwd: opts.cwd,
+      finding: opts.finding,
+      dangerouslySkipPermissions: opts.dangerouslySkipPermissions,
+      rawLogPath: rawLogPath(`${opts.attemptIdPrefix}-draft-v1`),
+      attemptId: `${opts.attemptIdPrefix}-draft-v1`,
+    }),
     independentAssessment(codexSession, {
       cwd: opts.cwd,
       finding: opts.finding,
+      rawLogPath: rawLogPath(`${opts.attemptIdPrefix}-assess`),
       attemptId: `${opts.attemptIdPrefix}-assess`,
     }),
   ]);
@@ -170,6 +181,7 @@ export async function runDebate(opts: RunDebateOptions): Promise<DebateResult> {
     finding: opts.finding,
     independentAssessment: assessmentResult.assessment,
     plan: currentPlan,
+    rawLogPath: rawLogPath(`${opts.attemptIdPrefix}-critique-r${round}`),
     attemptId: `${opts.attemptIdPrefix}-critique-r${round}`,
   });
   allObjections.push(...objections);
@@ -196,6 +208,8 @@ export async function runDebate(opts: RunDebateOptions): Promise<DebateResult> {
       finding: opts.finding,
       previous: currentPlan,
       objections: unresolvedForThisRound,
+      dangerouslySkipPermissions: opts.dangerouslySkipPermissions,
+      rawLogPath: rawLogPath(`${opts.attemptIdPrefix}-revise-r${round}`),
       attemptId: `${opts.attemptIdPrefix}-revise-r${round}`,
     });
     applyResolutions(objections, revised);
@@ -234,6 +248,7 @@ export async function runDebate(opts: RunDebateOptions): Promise<DebateResult> {
       independentAssessment: assessmentResult.assessment,
       plan: currentPlan,
       unresolvedOnly: stillBlocking,
+      rawLogPath: rawLogPath(`${opts.attemptIdPrefix}-critique-r${round}`),
       attemptId: `${opts.attemptIdPrefix}-critique-r${round}`,
     });
     allObjections.push(...nextObjections);

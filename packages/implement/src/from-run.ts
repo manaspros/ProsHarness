@@ -104,6 +104,9 @@ export async function deriveGate2OptionsFromRun(opts: DeriveGate2OptionsInput): 
   // needing @pros/worktree as a dependency just for its journal-entry
   // augmentations).
   const raw = entries as unknown as Array<Record<string, unknown>>;
+  const latestClaudeSession = [...raw].reverse().find((e) => e.kind === "model_session_recorded" && e.provider === "claude") as
+    | { dangerouslySkipPermissions?: boolean }
+    | undefined;
 
   const allocatedEntry = raw.find((e) => e.kind === "worktree_allocated") as
     | { allocationId: string; worktreePath: string; branch: string }
@@ -130,7 +133,7 @@ export async function deriveGate2OptionsFromRun(opts: DeriveGate2OptionsInput): 
   // reachable originating repo) so a run that never finished Gate 1's
   // debate fails with the actually-useful "no plan_finalized" message,
   // rather than a confusing lower-level git spawn error.
-  const finalizedEntry = raw.find((e) => e.kind === "plan_finalized") as
+  const finalizedEntry = [...raw].reverse().find((e) => e.kind === "plan_finalized") as
     | { planId: string; version: number }
     | undefined;
   if (!finalizedEntry) {
@@ -143,10 +146,10 @@ export async function deriveGate2OptionsFromRun(opts: DeriveGate2OptionsInput): 
 
   const planContentEntry = (
     finalizedEntry.version === 1
-      ? raw.find(
+      ? [...raw].reverse().find(
           (e) => e.kind === "plan_drafted" && e.planId === finalizedEntry.planId && e.version === finalizedEntry.version,
         )
-      : raw.find(
+      : [...raw].reverse().find(
           (e) => e.kind === "plan_revised" && e.planId === finalizedEntry.planId && e.version === finalizedEntry.version,
         )
   ) as { structuredJson: string } | undefined;
@@ -179,6 +182,9 @@ export async function deriveGate2OptionsFromRun(opts: DeriveGate2OptionsInput): 
     tokenCeiling: opts.tokenCeiling,
     ntfyUrl: opts.ntfyUrl,
     worktreeParentRepo,
+    // Keep Gate 2 consistent with the always-on Claude Code session mode,
+    // including runs created before this setting was made durable.
+    dangerouslySkipPermissions: true,
   };
 }
 

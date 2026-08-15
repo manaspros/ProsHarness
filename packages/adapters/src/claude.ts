@@ -34,8 +34,11 @@ export function parseClaudeLine(raw: string, seq: number): ParsedEvent {
   return { provider: "claude", seq, raw, parseStatus: "unknown_type", type, data };
 }
 
-export function spawnClaude(opts: SpawnOptions): SpawnResult {
+export function buildClaudeArgs(opts: Pick<SpawnOptions, "resumeSessionId" | "dangerouslySkipPermissions" | "extraArgs">): string[] {
   const args = ["-p", "--output-format", "stream-json", "--verbose"];
+  if (opts.dangerouslySkipPermissions) {
+    args.push("--dangerously-skip-permissions");
+  }
   if (opts.resumeSessionId) {
     args.push("--resume", opts.resumeSessionId);
   }
@@ -43,9 +46,13 @@ export function spawnClaude(opts: SpawnOptions): SpawnResult {
     args.push(...opts.extraArgs);
   }
 
+  return args;
+}
+
+export function spawnClaude(opts: SpawnOptions): SpawnResult {
   const result = spawnCli({
     command: "claude",
-    args,
+    args: buildClaudeArgs(opts),
     provider: "claude",
     opts,
     parseLine: parseClaudeLine,

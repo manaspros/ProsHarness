@@ -7,7 +7,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { runFinding } from "../src/finding.js";
-import { RealClaudeSession } from "../src/real-sessions.js";
+import { RealClaudeSession, toCodexStrictSchema } from "../src/real-sessions.js";
 import { ScriptedSession } from "./helpers.js";
 
 const execFileAsync = promisify(execFile);
@@ -28,6 +28,29 @@ test("runFinding parses a well-formed scripted finding", async () => {
   assert.equal(finding.evidence[0]!.file, "loop.ts");
   assert.equal(finding.evidence[0]!.line, 8);
   assert.ok(finding.findingId.length > 0);
+});
+
+test("toCodexStrictSchema adds strict object keywords without mutating the shared schema", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      answer: { type: "string" },
+      nested: { type: "object", properties: { ok: { type: "boolean" } } },
+    },
+    required: ["answer"],
+  };
+
+  const normalized = toCodexStrictSchema(schema) as {
+    additionalProperties: boolean;
+    required: string[];
+    properties: { nested: { additionalProperties: boolean; required: string[] } };
+  };
+
+  assert.equal(normalized.additionalProperties, false);
+  assert.deepEqual(normalized.required, ["answer", "nested"]);
+  assert.equal(normalized.properties.nested.additionalProperties, false);
+  assert.deepEqual(normalized.properties.nested.required, ["ok"]);
+  assert.equal("additionalProperties" in schema, false);
 });
 
 test("runFinding throws a clear, specific error on malformed model output rather than swallowing it", async () => {
@@ -61,6 +84,7 @@ test("acceptance: real claude CLI finds the seeded off-by-one and cites the righ
   }
 
   const repo = await mkdtemp(path.join(tmpdir(), "pros-plan-seeded-bug-"));
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     const fixtureSrc = path.join(__dirname, "fixtures/seeded-bug-src");
     await cp(fixtureSrc, repo, { recursive: true });
@@ -80,7 +104,9 @@ test("acceptance: real claude CLI finds the seeded off-by-one and cites the righ
       attemptId: "acceptance-finding-1",
     });
 
-    const timeout = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), timeoutMs));
+    const timeout = new Promise<"timeout">((resolve) => {
+      timeoutHandle = setTimeout(() => resolve("timeout"), timeoutMs);
+    });
     const result = await Promise.race([findingPromise.then((f) => ({ finding: f }) as const), timeout]);
 
     if (result === "timeout") {
@@ -100,6 +126,7 @@ test("acceptance: real claude CLI finds the seeded off-by-one and cites the righ
     }
     assert.ok(hit.snippet.length > 0);
   } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     await rm(repo, { recursive: true, force: true }).catch(() => undefined);
   }
 });

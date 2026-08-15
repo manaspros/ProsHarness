@@ -24,6 +24,8 @@ export interface ModelRunOptions {
   schema?: object;
   /** For continuing a session across debate rounds, when the underlying CLI/session supports it. */
   resumeSessionId?: string;
+  /** Explicit opt-in for Claude's permission bypass; ignored by other providers. */
+  dangerouslySkipPermissions?: boolean;
   rawLogPath?: string;
   attemptId: string;
 }

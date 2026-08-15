@@ -24,6 +24,8 @@ export interface SpawnOptions {
   cwd: string;
   prompt: string; // piped via stdin to avoid argv length/escaping issues
   resumeSessionId?: string; // claude session id or codex thread id
+  /** Permission bypass requested for an unattended model session. */
+  dangerouslySkipPermissions?: boolean;
   extraArgs?: string[]; // e.g. ["--json-schema", schemaJson] / ["--output-schema", path]
   env?: Record<string, string>;
   rawLogPath?: string; // if set, append every raw line here as it arrives (verbatim bytes, newline-delimited) — feeds packages/index's SQLite raw_events indexer (a separate package that tails these files, at-least-once, deduping by (attemptId, seq)). We only need to WRITE correctly (append, one line per event); fsync is not required here.
@@ -34,6 +36,8 @@ export interface SpawnResult {
   child: import("node:child_process").ChildProcess;
   events: AsyncIterable<ParsedEvent>; // async-iterate to consume events as they stream in, in order, seq starting at 0
   exitCode: Promise<number | null>; // resolves when the process exits
+  /** Buffered stderr for actionable diagnostics when a CLI turn fails. */
+  stderr: Promise<string>;
   versionSeen?: Promise<string>; // best-effort: the CLI's own --version string
 }
 

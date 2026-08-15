@@ -14,6 +14,7 @@
     "@pros/barrier": "workspace:*",
     "@pros/graph": "workspace:*",
     "@pros/index": "workspace:*",
+    "@pros/implement": "workspace:*",
     "@pros/miner": "workspace:*",
     "@pros/plan": "workspace:*",
     "@pros/review": "workspace:*",

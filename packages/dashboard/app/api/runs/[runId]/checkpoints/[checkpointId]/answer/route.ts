@@ -11,8 +11,17 @@
 import path from "node:path";
 import { NextResponse, type NextRequest } from "next/server";
 import { Barrier, StaleAnswerError } from "@pros/barrier";
-import { getRunsRoot } from "../../../../../../../lib/config";
+import { runApprovedGate2 } from "@pros/implement";
+import {
+  getHarnessRoot,
+  getLeaseDir,
+  getMaxConcurrent,
+  getMaxTokensPerRun,
+  getRunsRoot,
+} from "../../../../../../../lib/config";
 import { planActionToEffect, isAnswerEffect, DEFAULT_ANSWER_EFFECT, type PlanApprovalAction } from "../../../../../../../lib/gate-actions";
+import { recordPlanOperation } from "../../../../../../../lib/plan-operations";
+import { withOutputLock, OutputLockConflict } from "../../../../../../../lib/output-lock";
 
 async function parseBody(req: NextRequest): Promise<Record<string, string>> {
   const contentType = req.headers.get("content-type") ?? "";
@@ -91,6 +100,44 @@ export async function POST(
     return respondError(req, redirectTo, 500, `recordAnswer failed: ${(err as Error)?.message ?? String(err)}`);
   } finally {
     await barrier.close();
+  }
+
+  if (body.planAction === "approve") {
+    // Approval is a durable hand-off, then Gate 2 starts immediately in a
+    // fresh model context. The lock and the repeated approval/fence checks in
+    // runApprovedGate2 make this safe to retry alongside the scheduler.
+    void recordPlanOperation({ runId, operation: "implementation", transition: "started", requestedBy: "human" })
+      .then(() =>
+        withOutputLock({
+          outDir: runDir,
+          operation: "implementation",
+          run: async () => {
+            try {
+              await runApprovedGate2({
+                runsRoot,
+                runId,
+                repoRoot: getHarnessRoot(),
+                leaseDir: getLeaseDir(),
+                maxConcurrent: getMaxConcurrent(),
+                maxTokensPerRun: getMaxTokensPerRun(),
+                ntfyUrl: process.env.PROS_NTFY_URL,
+              });
+              await recordPlanOperation({ runId, operation: "implementation", transition: "success" });
+            } catch (err) {
+              await recordPlanOperation({
+                runId,
+                operation: "implementation",
+                transition: "failed",
+                error: err instanceof Error ? err.message : String(err),
+              }).catch(() => undefined);
+            }
+          },
+        }),
+      )
+      .catch(async (err) => {
+        const message = err instanceof OutputLockConflict ? "another implementation is already running" : err instanceof Error ? err.message : String(err);
+        await recordPlanOperation({ runId, operation: "implementation", transition: "failed", error: message }).catch(() => undefined);
+      });
   }
 
   if (redirectTo) {

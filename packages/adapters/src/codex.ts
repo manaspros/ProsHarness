@@ -27,7 +27,7 @@ const execFileAsync = promisify(execFile);
 // Flat top-level `type` values observed/expected from `codex exec --json`
 // (docs/01-m0-results.md). Anything else valid-JSON is "unknown_type"
 // (recorded, not dropped); anything failing JSON.parse is "malformed".
-const KNOWN_CODEX_TYPES = new Set(["thread.started", "turn.started", "item.completed", "turn.completed"]);
+const KNOWN_CODEX_TYPES = new Set(["thread.started", "turn.started", "item.completed", "turn.completed", "turn.failed"]);
 
 export function parseCodexLine(raw: string, seq: number): ParsedEvent {
   let data: unknown;
@@ -48,8 +48,16 @@ export function parseCodexLine(raw: string, seq: number): ParsedEvent {
   return { provider: "codex", seq, raw, parseStatus: "unknown_type", type, data };
 }
 
-export function spawnCodex(opts: SpawnOptions): SpawnResult {
+export function buildCodexArgs(
+  opts: Pick<SpawnOptions, "resumeSessionId" | "dangerouslySkipPermissions" | "extraArgs">,
+): string[] {
   const args = ["exec", "--json"];
+  if (opts.dangerouslySkipPermissions) {
+    // Automated review has no interactive approval channel. Without this,
+    // Codex can terminate a turn with `turn.failed` while waiting for an
+    // approval that the orchestrator cannot provide.
+    args.push("--dangerously-bypass-approvals-and-sandbox");
+  }
   if (opts.extraArgs) {
     args.push(...opts.extraArgs);
   }
@@ -58,6 +66,11 @@ export function spawnCodex(opts: SpawnOptions): SpawnResult {
   } else {
     args.push("-");
   }
+  return args;
+}
+
+export function spawnCodex(opts: SpawnOptions): SpawnResult {
+  const args = buildCodexArgs(opts);
 
   const result = spawnCli({
     command: "codex",

@@ -26,7 +26,7 @@
  * return value or thrown errors).
  */
 
-import type { ModelSession } from "@pros/plan";
+import { DEFAULT_SESSION_DIRECTIVE, type ModelSession } from "@pros/plan";
 import { loadRunState, StaleFenceError } from "@pros/barrier";
 import type { TokenCeiling } from "@pros/lease";
 
@@ -51,6 +51,7 @@ export interface VerifyInput {
   attemptId: string;
   rawLogPath?: string;
   tokenCeiling?: TokenCeiling;
+  dangerouslySkipPermissions?: boolean;
 }
 
 /**
@@ -106,6 +107,7 @@ export async function runVerification(input: VerifyInput): Promise<Verdict> {
 
   const prompt = [
     "You are verifying a completed implementation change in the repository at the current working directory.",
+    DEFAULT_SESSION_DIRECTIVE,
     "Run this project's build/typecheck/test commands (e.g. `pnpm -r typecheck` and `pnpm -r test`, or the",
     "equivalent for this repo if it isn't a pnpm/TS repo) and determine whether the change is correct.",
     "",
@@ -125,6 +127,7 @@ export async function runVerification(input: VerifyInput): Promise<Verdict> {
     schema: VERDICT_SCHEMA,
     attemptId: input.attemptId,
     rawLogPath: input.rawLogPath,
+    dangerouslySkipPermissions: input.dangerouslySkipPermissions,
   });
 
   if (input.tokenCeiling) {

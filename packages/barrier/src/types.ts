@@ -11,6 +11,9 @@ export type AnswerEffect =
   | "requires_plan_amendment"
   | "abort";
 
+/** Long-running model/implementation operations surfaced by the dashboard. */
+export type PlanOperation = "plan_pipeline" | "codex_review" | "claude_refinement" | "implementation";
+
 /**
  * The checkpoint sub-state machine (docs/03-architecture.md):
  *   running -> checkpoint_requested -> quiescing -> parked
@@ -87,7 +90,16 @@ export type JournalEntry = JournalEntryBase &
     | { kind: "worktree_confirmed"; allocationId: string }
     | { kind: "worktree_rollback"; allocationId: string; reason: string }
     // --- M2: plan pipeline (finding -> plan -> independent critique -> bounded debate) ---
-    | { kind: "finding_recorded"; findingId: string; title: string; evidenceJson: string }
+    | { kind: "finding_recorded"; findingId: string; title: string; evidenceJson: string; summary?: string }
+    | {
+        kind: "model_session_recorded";
+        provider: "claude" | "codex";
+        sessionId: string;
+        attemptId: string;
+        dangerouslySkipPermissions?: boolean;
+      }
+    | { kind: "plan_operation_started"; operation: PlanOperation; requestedBy?: string; dangerouslySkipPermissions?: boolean }
+    | { kind: "plan_operation_completed"; operation: PlanOperation; outcome: "success" | "failed"; error?: string }
     | { kind: "plan_drafted"; planId: string; version: number; markdown: string; structuredJson: string }
     | {
         kind: "critique_independent";

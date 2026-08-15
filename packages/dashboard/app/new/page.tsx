@@ -6,7 +6,7 @@ import { SectionHeading } from "@/components/SectionHeading";
 import { EmptyState } from "@/components/EmptyState";
 import { ListRow } from "@/components/ListRow";
 import { StatusPill, type Status } from "@/components/StatusPill";
-import { getRunsRoot } from "@/lib/config";
+import { getDefaultRepoRoot, getRunsRoot } from "@/lib/config";
 import { listRuns } from "@/lib/list-runs";
 import { deriveRunStatus, RUN_STATUS_LABELS, type RunStatusLabel } from "@/lib/run-status";
 import { NewSessionForm } from "./NewSessionForm";
@@ -18,7 +18,12 @@ function toPillStatus(label: RunStatusLabel): Status {
   return label as Status; // "running" | "idle" | "done" all match Status directly.
 }
 
-export default async function NewSessionPage() {
+export default async function NewSessionPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ description?: string; workspace?: string; ticket?: string }>;
+}) {
+  const params = (await searchParams) ?? {};
   const runsRoot = getRunsRoot();
   const runs = await listRuns(runsRoot).catch(() => []);
 
@@ -31,7 +36,13 @@ export default async function NewSessionPage() {
 
   return (
     <div className="flex flex-col gap-10">
-      <NewSessionForm isFirstRun={isFirstRun} />
+      <NewSessionForm
+        isFirstRun={isFirstRun}
+        defaultRepoRoot={getDefaultRepoRoot()}
+        initialDescription={params.description}
+        initialWorkspace={params.workspace}
+        ticketIdentifier={params.ticket}
+      />
 
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-3">
         <SectionHeading

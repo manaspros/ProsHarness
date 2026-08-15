@@ -1,3 +1,4 @@
+import path from "node:path";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -14,11 +15,13 @@ import type { LucideIcon } from "lucide-react";
 import { getRunsRoot, getIndexDbPath } from "../../../../lib/config";
 import { rebuildAndOpenIndex } from "../../../../lib/db";
 import { loadSessionGraph, groupNodesByAttempt, countUnknownNodes } from "../../../../lib/graph-data";
+import { getSessionActivity } from "../../../../lib/session-activity";
 import { SectionHeading } from "../../../../components/SectionHeading";
 import { Surface } from "../../../../components/Surface";
 import { EmptyState } from "../../../../components/EmptyState";
 import { Alert } from "../../../../components/Alert";
 import { cn } from "../../../../lib/utils";
+import { LiveSessionPanel } from "../../../../components/LiveSessionPanel";
 
 export const dynamic = "force-dynamic";
 
@@ -63,6 +66,7 @@ const KIND_COLOR: Record<string, string> = {
 export default async function GraphPage({ params }: { params: Promise<{ runId: string }> }) {
   const { runId } = await params;
   const runsRoot = getRunsRoot();
+  const sessionActivity = await getSessionActivity(path.join(runsRoot, runId));
   const dbPath = getIndexDbPath();
 
   const { db } = await rebuildAndOpenIndex(dbPath, runsRoot);
@@ -91,7 +95,9 @@ export default async function GraphPage({ params }: { params: Promise<{ runId: s
         <ArrowLeft className="h-3.5 w-3.5" /> run overview
       </Link>
 
-      <SectionHeading title="Session graph" description={<code>{runId}</code>} />
+      <SectionHeading title="Claude session" description={<code>{runId}</code>} />
+
+      <LiveSessionPanel runId={runId} initial={sessionActivity} />
 
       {unknownCount > 0 && (
         <Alert variant="warning" title="Unparsed events present">
@@ -106,7 +112,7 @@ export default async function GraphPage({ params }: { params: Promise<{ runId: s
 
       <section className="space-y-4">
         <h3 className="text-lg font-semibold tracking-tight text-foreground">
-          Timeline ({graph.nodes.length} node{graph.nodes.length === 1 ? "" : "s"})
+          Session history ({graph.nodes.length} event{graph.nodes.length === 1 ? "" : "s"})
         </h3>
 
         {grouped.length === 0 ? (
@@ -118,7 +124,7 @@ export default async function GraphPage({ params }: { params: Promise<{ runId: s
             {grouped.map((group) => (
               <Surface key={group.attemptId} elevation="raised" className="p-5">
                 <h4 className="mb-4 text-sm font-semibold text-foreground">
-                  Attempt <code className="font-mono text-xs text-muted-foreground">{group.attemptId}</code>
+                  Session step <code className="font-mono text-xs text-muted-foreground">{group.attemptId}</code>
                 </h4>
 
                 <ol className="relative space-y-4 border-l border-border pl-6">
@@ -148,7 +154,7 @@ export default async function GraphPage({ params }: { params: Promise<{ runId: s
                           <span className="text-sm text-foreground">{node.label}</span>
                         </div>
                         <div className="mt-0.5 text-xs text-muted-foreground">
-                          <code>raw_events#{node.rawEventId}</code>
+                          <span>event {node.seq + 1}</span>
                         </div>
                       </li>
                     );

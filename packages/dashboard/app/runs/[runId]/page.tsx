@@ -2,7 +2,7 @@ import path from "node:path";
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, ListChecks, MessageCircleQuestion, Share2 } from "lucide-react";
+import { ArrowLeft, MessageCircleQuestion, Share2 } from "lucide-react";
 import { loadRunState, readManifest } from "@pros/barrier";
 import { getRunsRoot, getIndexDbPath } from "../../../lib/config";
 import { rebuildAndOpenIndex } from "../../../lib/db";
@@ -76,7 +76,7 @@ export default async function RunDetailPage({ params }: { params: Promise<{ runI
               href={`/runs/${encodeURIComponent(runId)}/plan`}
               className="rounded-md border border-border px-3 py-1.5 text-foreground/90 transition-colors hover:bg-white/[0.04]"
             >
-              Plan
+              Review plan
             </Link>
             <Link
               href={`/runs/${encodeURIComponent(runId)}/questions`}
@@ -85,16 +85,10 @@ export default async function RunDetailPage({ params }: { params: Promise<{ runI
               <MessageCircleQuestion className="h-3.5 w-3.5" /> Questions
             </Link>
             <Link
-              href={`/runs/${encodeURIComponent(runId)}/graph`}
+              href={`/runs/${encodeURIComponent(runId)}/session`}
               className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-foreground/90 transition-colors hover:bg-white/[0.04]"
             >
-              <Share2 className="h-3.5 w-3.5" /> Session graph
-            </Link>
-            <Link
-              href={`/runs/${encodeURIComponent(runId)}/review`}
-              className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-foreground/90 transition-colors hover:bg-white/[0.04]"
-            >
-              <ListChecks className="h-3.5 w-3.5" /> Review
+              <Share2 className="h-3.5 w-3.5" /> Claude session
             </Link>
           </div>
         }
@@ -113,24 +107,24 @@ export default async function RunDetailPage({ params }: { params: Promise<{ runI
       )}
 
       <Surface elevation="raised" className="grid grid-cols-2 gap-x-6 gap-y-2 p-5 text-sm sm:grid-cols-4">
-        <Field label="Fence epoch" value={state.fenceEpoch} />
-        <Field label="Last journal seq" value={state.lastSeq} />
-        <Field label="Journal truncated" value={state.truncated ? "YES" : "no"} />
-        <Field label="Attempts" value={state.attempts.size} />
+        <Field label="Workflow revision" value={state.fenceEpoch} />
+        <Field label="Activity entries" value={state.lastSeq + 1} />
+        <Field label="History status" value={state.truncated ? "incomplete" : "complete"} />
+        <Field label="Agent sessions" value={state.attempts.size} />
       </Surface>
 
       <section className="space-y-3">
-        <h3 className="text-lg font-semibold tracking-tight text-foreground">Manifest</h3>
+        <h3 className="text-lg font-semibold tracking-tight text-foreground">Run snapshot</h3>
         {manifest ? (
           <Surface elevation="raised" className="divide-y divide-border">
-            <ManifestRow label="cwd" value={manifest.cwd} />
-            <ManifestRow label="headSha" value={manifest.headSha} />
-            <ManifestRow label="baseSha" value={manifest.baseSha} />
-            <ManifestRow label="fenceEpoch (at snapshot)" value={String(manifest.fenceEpoch)} />
-            <ManifestRow label="createdAt" value={manifest.createdAt} />
+            <ManifestRow label="Workspace" value={manifest.cwd} />
+            <ManifestRow label="Current commit" value={manifest.headSha} />
+            <ManifestRow label="Starting commit" value={manifest.baseSha} />
+            <ManifestRow label="Workflow revision" value={String(manifest.fenceEpoch)} />
+            <ManifestRow label="Started" value={manifest.createdAt} />
           </Surface>
         ) : (
-          <p className="text-sm text-muted-foreground">No manifest yet (run has never parked).</p>
+          <p className="text-sm text-muted-foreground">No run snapshot yet. It will appear after the session is parked.</p>
         )}
       </section>
 

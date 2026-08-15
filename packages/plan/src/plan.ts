@@ -2,12 +2,15 @@ import { randomUUID } from "node:crypto";
 import type { ModelSession } from "./model-session.js";
 import type { Finding } from "./finding.js";
 import type { Objection } from "./critique.js";
+import { DEFAULT_SESSION_DIRECTIVE } from "./session-directive.js";
 
 export interface PlanDoc {
   planId: string;
   version: number;
   markdown: string;
   structured: unknown;
+  /** The Claude session that produced this version, when the provider returned one. */
+  sessionId?: string;
 }
 
 const PLAN_SCHEMA = {
@@ -55,6 +58,10 @@ export interface DraftPlanOptions {
   cwd: string;
   finding: Finding;
   attemptId: string;
+  /** Optional Claude session to resume. Defaults to the session on `finding`. */
+  resumeSessionId?: string;
+  dangerouslySkipPermissions?: boolean;
+  rawLogPath?: string;
 }
 
 /** Draft the first version (v1) of a plan addressing `opts.finding`. */
@@ -63,6 +70,8 @@ export async function draftPlan(session: ModelSession, opts: DraftPlanOptions): 
     "You are drafting an implementation plan to fix/address the following finding, in the repository at the current working directory.",
     "Use your own tools to read the relevant code before proposing changes.",
     "",
+    DEFAULT_SESSION_DIRECTIVE,
+    "",
     findingBlock(opts.finding),
     "",
     "Conclude with a single JSON object (matching the provided schema) with:",
@@ -70,9 +79,23 @@ export async function draftPlan(session: ModelSession, opts: DraftPlanOptions): 
     '  - "structured": {steps: string[], filesTouched: string[], risk: string} summarizing the same plan',
   ].join("\n");
 
-  const result = await session.run({ cwd: opts.cwd, prompt, schema: PLAN_SCHEMA, attemptId: opts.attemptId });
+  const result = await session.run({
+    cwd: opts.cwd,
+    prompt,
+    schema: PLAN_SCHEMA,
+    resumeSessionId: opts.resumeSessionId ?? opts.finding.sessionId,
+    dangerouslySkipPermissions: opts.dangerouslySkipPermissions,
+    rawLogPath: opts.rawLogPath,
+    attemptId: opts.attemptId,
+  });
   const { markdown, structured } = parsePlanResponse(result.text, "draftPlan");
-  return { planId: randomUUID(), version: 1, markdown, structured };
+  return {
+    planId: randomUUID(),
+    version: 1,
+    markdown,
+    structured,
+    sessionId: result.sessionId ?? opts.resumeSessionId ?? opts.finding.sessionId,
+  };
 }
 
 export interface RevisePlanOptions {
@@ -81,6 +104,10 @@ export interface RevisePlanOptions {
   previous: PlanDoc;
   objections: Objection[];
   attemptId: string;
+  /** Optional Claude session to resume. Defaults to the session on `previous`. */
+  resumeSessionId?: string;
+  dangerouslySkipPermissions?: boolean;
+  rawLogPath?: string;
 }
 
 /**
@@ -99,6 +126,8 @@ export async function revisePlan(session: ModelSession, opts: RevisePlanOptions)
 
   const prompt = [
     "You previously drafted the following plan to address a finding:",
+    "",
+    DEFAULT_SESSION_DIRECTIVE,
     "",
     `--- previous plan (version ${opts.previous.version}) ---`,
     opts.previous.markdown,
@@ -151,9 +180,70 @@ export async function revisePlan(session: ModelSession, opts: RevisePlanOptions)
     cwd: opts.cwd,
     prompt,
     schema: revisePlanSchema,
-    resumeSessionId: undefined,
+    resumeSessionId: opts.resumeSessionId ?? opts.previous.sessionId,
+    dangerouslySkipPermissions: opts.dangerouslySkipPermissions,
+    rawLogPath: opts.rawLogPath,
     attemptId: opts.attemptId,
   });
   const { markdown, structured } = parsePlanResponse(result.text, "revisePlan");
-  return { planId: opts.previous.planId, version: opts.previous.version + 1, markdown, structured };
+  return {
+    planId: opts.previous.planId,
+    version: opts.previous.version + 1,
+    markdown,
+    structured,
+    sessionId: result.sessionId ?? opts.resumeSessionId ?? opts.previous.sessionId,
+  };
+}
+
+export interface RefinePlanOptions {
+  cwd: string;
+  finding: Finding;
+  previous: PlanDoc;
+  instruction: string;
+  attemptId: string;
+  /** Optional Claude session to resume. Defaults to the session on `previous`. */
+  resumeSessionId?: string;
+  dangerouslySkipPermissions?: boolean;
+  rawLogPath?: string;
+}
+
+/** Apply a human instruction to the current plan while preserving its Claude context. */
+export async function refinePlanWithInstruction(session: ModelSession, opts: RefinePlanOptions): Promise<PlanDoc> {
+  const prompt = [
+    "Refine the current implementation plan in response to this user's instruction.",
+    "Continue investigating the repository with your tools as needed, but do not implement code yet.",
+    "",
+    DEFAULT_SESSION_DIRECTIVE,
+    "",
+    `--- current plan (version ${opts.previous.version}) ---`,
+    opts.previous.markdown,
+    "",
+    "--- user instruction ---",
+    opts.instruction,
+    "",
+    "--- original finding ---",
+    findingBlock(opts.finding),
+    "",
+    "Conclude with a single JSON object (matching the provided schema) with:",
+    '  - "markdown": the updated human-readable plan in Markdown',
+    '  - "structured": {steps: string[], filesTouched: string[], risk: string}',
+  ].join("\n");
+
+  const result = await session.run({
+    cwd: opts.cwd,
+    prompt,
+    schema: PLAN_SCHEMA,
+    resumeSessionId: opts.resumeSessionId ?? opts.previous.sessionId,
+    dangerouslySkipPermissions: opts.dangerouslySkipPermissions,
+    rawLogPath: opts.rawLogPath,
+    attemptId: opts.attemptId,
+  });
+  const { markdown, structured } = parsePlanResponse(result.text, "refinePlanWithInstruction");
+  return {
+    planId: opts.previous.planId,
+    version: opts.previous.version + 1,
+    markdown,
+    structured,
+    sessionId: result.sessionId ?? opts.resumeSessionId ?? opts.previous.sessionId,
+  };
 }

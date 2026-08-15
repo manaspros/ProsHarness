@@ -109,6 +109,9 @@ importers:
       '@pros/graph':
         specifier: workspace:*
         version: link:../graph
+      '@pros/implement':
+        specifier: workspace:*
+        version: link:../implement
       '@pros/index':
         specifier: workspace:*
         version: link:../index

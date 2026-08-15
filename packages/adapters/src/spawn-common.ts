@@ -93,16 +93,41 @@ export function spawnCli({ command, args, provider, opts, parseLine }: SpawnCliA
   child.stdin.end();
 
   // Capture stderr for diagnostics; not part of the parsed event stream, but
-  // we don't want it to be silently lost either — surface via a buffered
-  // string accessible through the child process's own `stderr` stream if a
-  // caller wants it (we don't wrap it further here to keep scope tight).
+  // keep it buffered so a failed unattended turn can report the CLI's actual
+  // reason instead of collapsing into a generic "no final message" error.
+  let stderrText = "";
+  let stderrFinished = false;
+  let finishStderr!: () => void;
+  const stderr = new Promise<string>((resolve) => {
+    finishStderr = () => {
+      if (stderrFinished) return;
+      stderrFinished = true;
+      resolve(stderrText);
+    };
+  });
+  if (child.stderr) {
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string | Buffer) => {
+      stderrText += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    });
+    child.stderr.once("end", finishStderr);
+    child.stderr.once("error", finishStderr);
+  } else {
+    finishStderr();
+  }
 
   let exitCodeResolve!: (code: number | null) => void;
   const exitCode = new Promise<number | null>((resolve) => {
     exitCodeResolve = resolve;
   });
-  child.on("close", (code) => exitCodeResolve(code));
-  child.on("error", () => exitCodeResolve(null));
+  child.on("close", (code) => {
+    exitCodeResolve(code);
+    finishStderr();
+  });
+  child.on("error", () => {
+    exitCodeResolve(null);
+    finishStderr();
+  });
 
   const rawLogPath = opts.rawLogPath;
   const attemptId = opts.attemptId;
@@ -114,7 +139,10 @@ export function spawnCli({ command, args, provider, opts, parseLine }: SpawnCliA
       if (rawLogPath) {
         // At-least-once append; failures here must never break parsing.
         try {
-          await appendFile(rawLogPath, `${attemptId}\t${seq}\t${line}\n`, "utf8");
+          // The attempt directory already carries attemptId and the line
+          // order is the raw file's seq. Keep the file itself as verbatim
+          // provider NDJSON so it can be tailed and parsed by the dashboard.
+          await appendFile(rawLogPath, `${line}\n`, "utf8");
         } catch {
           // Swallow: the raw log is a best-effort side channel for the index
           // package, not required for correct event delivery.
@@ -130,5 +158,6 @@ export function spawnCli({ command, args, provider, opts, parseLine }: SpawnCliA
     child,
     events: events(),
     exitCode,
+    stderr,
   };
 }

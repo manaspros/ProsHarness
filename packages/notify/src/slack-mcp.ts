@@ -60,6 +60,7 @@ class RealClaudeMcpSession implements SlackMcpSession {
     const { events, exitCode } = spawnClaude({
       cwd: opts.cwd,
       prompt: opts.prompt,
+      dangerouslySkipPermissions: true,
       attemptId: opts.attemptId,
     });
 

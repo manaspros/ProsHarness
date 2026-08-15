@@ -1,7 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnCli } from "../src/spawn-common.js";
+import { buildClaudeArgs } from "../src/claude.js";
 import type { ParsedEvent } from "../src/types.js";
+
+test("buildClaudeArgs only enables permission bypass when explicitly requested", () => {
+  assert.ok(!buildClaudeArgs({}).includes("--dangerously-skip-permissions"));
+  assert.ok(buildClaudeArgs({ dangerouslySkipPermissions: true }).includes("--dangerously-skip-permissions"));
+});
 
 /**
  * Proves the credential-stripping property described in spawn-common.ts's
@@ -99,4 +105,20 @@ test("spawnCli also strips GH_TOKEN passed via opts.env (simulating a caller for
 
   const reported = JSON.parse(events[0]!.raw) as { GH_TOKEN?: string };
   assert.equal(reported.GH_TOKEN, undefined, "GH_TOKEN passed via opts.env must still be stripped before spawning");
+});
+
+test("spawnCli buffers stderr for failed-session diagnostics", async () => {
+  const result = spawnCli({
+    command: "node",
+    args: ["-e", "process.stderr.write('codex approval failed'); console.log('{}')"],
+    provider: "codex",
+    opts: { cwd: process.cwd(), prompt: "", attemptId: "spawn-common-test-stderr" },
+    parseLine: (raw, seq) => ({ provider: "codex", seq, raw, parseStatus: "ok" as const, data: raw }),
+  });
+
+  for await (const _event of result.events) {
+    // Drain stdout so the child lifecycle is fully observed.
+  }
+  await result.exitCode;
+  assert.match(await result.stderr, /codex approval failed/);
 });

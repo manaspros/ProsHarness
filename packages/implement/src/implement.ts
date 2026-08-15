@@ -14,7 +14,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { ModelSession, ModelUsage } from "@pros/plan";
+import { DEFAULT_SESSION_DIRECTIVE, type ModelSession, type ModelUsage } from "@pros/plan";
 import { loadAgentBriefByName } from "@pros/agents";
 import type { TokenCeiling } from "@pros/lease";
 
@@ -43,6 +43,8 @@ export interface ImplementInput {
   repoRoot: string;
   /** Optional; if given, .record(result.usage) is called after the run -- let TokenCeilingExceededError propagate, it's the caller's job to treat it as "stop the pipeline". */
   tokenCeiling?: TokenCeiling;
+  /** Explicitly carry the Gate 1 permission policy into the fresh implementer context. */
+  dangerouslySkipPermissions?: boolean;
 }
 
 export interface ImplementResult {
@@ -104,6 +106,8 @@ export async function runImplementation(input: ImplementInput): Promise<Implemen
   const prompt = [
     brief.systemPrompt,
     "",
+    DEFAULT_SESSION_DIRECTIVE,
+    "",
     "--- Approved plan (Gate 1) ---",
     input.planMarkdown,
     "",
@@ -117,6 +121,7 @@ export async function runImplementation(input: ImplementInput): Promise<Implemen
     prompt,
     attemptId: input.attemptId,
     rawLogPath: input.rawLogPath,
+    dangerouslySkipPermissions: input.dangerouslySkipPermissions,
   });
 
   if (input.tokenCeiling) {

@@ -8,6 +8,7 @@ import {
   FileText,
   FolderGit2,
   GitBranch,
+  Loader2,
   ListTree,
   MessageSquarePlus,
   ShieldCheck,
@@ -18,13 +19,16 @@ import { getRunsRoot, getIndexDbPath } from "../../../../lib/config";
 import { rebuildAndOpenIndex } from "../../../../lib/db";
 import { resolveCurrentPlan } from "../../../../lib/plan-doc";
 import { PLAN_APPROVAL_ACTIONS } from "../../../../lib/gate-actions";
-import { getWorktreeInfo } from "../../../../lib/review-data";
+import { getPlanOperationStatus, getWorktreeInfo, type PlanOperationStatus } from "../../../../lib/review-data";
+import { getSessionActivity } from "../../../../lib/session-activity";
 import { splitMarkdownIntoSections, findMatchingSection } from "./plan-sections";
 import { Surface } from "@/components/Surface";
 import { StatusPill, type Status } from "@/components/StatusPill";
 import { SectionHeading } from "@/components/SectionHeading";
 import { EmptyState } from "@/components/EmptyState";
 import { PlanMarkdown } from "@/components/PlanMarkdown";
+import { PlanPipelineStatus } from "@/components/PlanPipelineStatus";
+import { LiveSessionPanel } from "@/components/LiveSessionPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -44,23 +48,26 @@ export default async function PlanPage({
   searchParams,
 }: {
   params: Promise<{ runId: string }>;
-  searchParams: Promise<{ error?: string; notice?: string }>;
+  searchParams: Promise<{ error?: string; notice?: string; pending?: string }>;
 }) {
   const { runId } = await params;
-  const { error, notice } = await searchParams;
+  const { error, notice, pending } = await searchParams;
+  const waitingForPipeline = pending === "1";
   const runsRoot = getRunsRoot();
   const runDir = path.join(runsRoot, runId);
 
   const state = await loadRunState(runDir).catch(() => undefined);
+  const sessionActivity = await getSessionActivity(runDir);
 
   const dbPath = getIndexDbPath();
   const { db } = await rebuildAndOpenIndex(dbPath, runsRoot);
-  let plans, objections, worktree;
+  let plans, objections, worktree, operation;
   try {
     plans = getPlans(db, runId);
     const current = resolveCurrentPlan(plans);
     objections = current ? getObjections(db, current.plan_id) : [];
     worktree = getWorktreeInfo(db, runId);
+    operation = getPlanOperationStatus(db, runId);
   } finally {
     db.close();
   }
@@ -75,6 +82,10 @@ export default async function PlanPage({
   const parkedApprovalCheckpoint = state
     ? [...state.checkpoints.values()].find((cp) => cp.gateType === "plan_approval" && cp.phase === "parked")
     : undefined;
+  const operationRunning = operation?.state === "running";
+  const waitingForPlan = (waitingForPipeline || operationRunning) && !current && operation?.operation !== "implementation";
+  const waitingForApproval =
+    waitingForPipeline && !!current && !parkedApprovalCheckpoint && operation?.operation === "plan_pipeline";
 
   return (
     <div className="space-y-5">
@@ -113,13 +124,18 @@ export default async function PlanPage({
         </Surface>
       )}
 
+      <PlanPipelineStatus waitingForPlan={waitingForPlan} waitingForApproval={waitingForApproval} operation={operation} />
+      <LiveSessionPanel runId={runId} initial={sessionActivity} />
+
       {!current ? (
         <div className="mt-6">
-          <EmptyState
-            icon={<FileText className="h-6 w-6" />}
-            title="No plan has been drafted for this run yet"
-            description="Once Gate 1's plan/critique/debate loop runs, the current plan document will appear here."
-          />
+          {waitingForPlan || operationRunning ? <PlanLoadingState /> : (
+            <EmptyState
+              icon={<FileText className="h-6 w-6" />}
+              title="No plan has been drafted for this run yet"
+              description="Once Gate 1's plan and review finish, the current plan document will appear here."
+            />
+          )}
         </div>
       ) : (
         <PlanContent
@@ -128,8 +144,39 @@ export default async function PlanPage({
           unresolvedObjections={unresolvedObjections}
           worktree={worktree}
           parkedApprovalCheckpoint={parkedApprovalCheckpoint}
+          operation={operation}
         />
       )}
+    </div>
+  );
+}
+
+function PlanLoadingState() {
+  return (
+    <Surface elevation="raised" grain={false} className="flex min-h-[300px] flex-col items-center justify-center p-8 text-center">
+      <span className="grid h-12 w-12 place-items-center rounded-2xl bg-status-running/15 text-status-running">
+        <Loader2 className="h-6 w-6 animate-spin" />
+      </span>
+      <h2 className="mt-5 text-lg font-semibold text-foreground">Claude is working on your plan</h2>
+      <p className="mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">
+        It is exploring the workspace, checking the surrounding code, and preparing a plan for your review. This page updates automatically.
+      </p>
+      <div className="mt-6 grid w-full max-w-md gap-2 text-left text-xs text-muted-foreground sm:grid-cols-3">
+        <LoadingStep label="Explore code" />
+        <LoadingStep label="Challenge risks" />
+        <LoadingStep label="Draft plan" />
+      </div>
+    </Surface>
+  );
+}
+
+function LoadingStep({ label }: { label: string }) {
+  return (
+    <div className="rounded-lg border border-border bg-surface-base/60 px-3 py-2.5">
+      <div className="flex items-center gap-2">
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-status-running" />
+        {label}
+      </div>
     </div>
   );
 }
@@ -140,12 +187,14 @@ function PlanContent({
   unresolvedObjections,
   worktree,
   parkedApprovalCheckpoint,
+  operation,
 }: {
   runId: string;
   current: { plan_id: string; version: number; state: string; markdown: string; edited_at: string | null; edited_by: string | null };
   unresolvedObjections: ObjectionRow[];
   worktree: { repoRoot: string; worktreePath: string | null; branch: string | null; baseSha: string | null } | undefined;
   parkedApprovalCheckpoint: { checkpointId: string; prompt: string } | undefined;
+  operation: PlanOperationStatus | undefined;
 }) {
   const sections = splitMarkdownIntoSections(current.markdown);
   const encodedRunId = encodeURIComponent(runId);
@@ -247,12 +296,21 @@ function PlanContent({
         </Surface>
 
         <Surface elevation="raised" className="p-5">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-sm font-semibold text-foreground">Codex objections</h2>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold text-foreground">Codex objections</h2>
+              <p className="mt-1 text-xs text-muted-foreground">Run a fresh adversarial pass whenever the plan changes.</p>
+            </div>
             <Badge variant="outline" className="rounded-full px-2 py-0.5 text-[10px]">
               {unresolvedObjections.length} open
             </Badge>
           </div>
+          <form action={`/api/runs/${encodedRunId}/plan/adversarial-review`} method="post" className="mt-3">
+            <input type="hidden" name="redirectTo" value={`/runs/${encodedRunId}/plan?pending=1`} />
+            <Button type="submit" variant="outline" size="sm" className="w-full" disabled={operation?.state === "running"}>
+              Run Codex adversarial review
+            </Button>
+          </form>
           <div className="mt-4">
             {unresolvedObjections.length === 0 ? (
               <EmptyState
@@ -274,13 +332,13 @@ function PlanContent({
         </Surface>
 
         <Surface elevation="raised" className="p-5">
-          <h2 className="text-sm font-semibold text-foreground">Run an instruction directly</h2>
+          <h2 className="text-sm font-semibold text-foreground">Refine this plan with Claude</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Records the instruction against this plan. Does not yet launch a live pipeline run -- see the confirmation
-            banner after submitting.
+            Claude receives your instruction in the same planning session when its durable session ID is available, then
+            writes a new plan version on the left.
           </p>
           <form action={`/api/runs/${encodedRunId}/plan/direct-run`} method="post" className="mt-3">
-            <input type="hidden" name="redirectTo" value={`/runs/${encodedRunId}/plan`} />
+            <input type="hidden" name="redirectTo" value={`/runs/${encodedRunId}/plan?pending=1`} />
             <Textarea
               name="instruction"
               rows={3}
@@ -299,7 +357,7 @@ function PlanContent({
               </label>
               <Button type="submit" variant="secondary" size="sm" className="gap-1.5">
                 <MessageSquarePlus className="h-3.5 w-3.5" />
-                Run
+                Refine plan
               </Button>
             </div>
           </form>
@@ -309,13 +367,17 @@ function PlanContent({
           <Surface elevation="raised" className="p-5">
             <h2 className="text-sm font-semibold text-foreground">Gate 1: plan approval</h2>
             <p className="mt-2 text-sm text-muted-foreground">{parkedApprovalCheckpoint.prompt}</p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Approve hands only this plan to a fresh implementation context. Reject abandons this session and will not
+              start implementation.
+            </p>
 
             <div className="mt-4 flex flex-col gap-2">
               <GateActionForm
                 runId={runId}
                 checkpointId={parkedApprovalCheckpoint.checkpointId}
                 action="approve"
-                label="Approve"
+                label="Approve & start fresh implementation"
                 buttonProps={{ variant: "default", size: "lg", className: "w-full font-semibold" }}
               />
               <div className="flex gap-2">
@@ -330,7 +392,7 @@ function PlanContent({
                   runId={runId}
                   checkpointId={parkedApprovalCheckpoint.checkpointId}
                   action="reject"
-                  label="Reject"
+                  label="Reject & abandon session"
                   buttonProps={{ variant: "destructive", size: "sm", className: "flex-1" }}
                 />
               </div>
@@ -400,7 +462,7 @@ function GateActionForm({
     >
       <input type="hidden" name="planAction" value={action} />
       <input type="hidden" name="answer" value={action} />
-      <input type="hidden" name="redirectTo" value={`/runs/${encodeURIComponent(runId)}/plan`} />
+      <input type="hidden" name="redirectTo" value={`/runs/${encodeURIComponent(runId)}/plan?pending=1`} />
       <Button type="submit" {...buttonProps}>
         {label}
       </Button>

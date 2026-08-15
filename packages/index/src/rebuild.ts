@@ -32,7 +32,7 @@ import { Journal, type JournalEntry } from "@pros/barrier";
 import { SCHEMA_SQL } from "./schema.js";
 
 const CLAUDE_EVENT_TYPES = new Set(["rate_limit_event", "system", "assistant", "user", "result"]);
-const CODEX_EVENT_TYPES = new Set(["thread.started", "turn.started", "item.completed", "turn.completed"]);
+const CODEX_EVENT_TYPES = new Set(["thread.started", "turn.started", "item.completed", "turn.completed", "turn.failed"]);
 const KNOWN_EVENT_TYPES = new Set([...CLAUDE_EVENT_TYPES, ...CODEX_EVENT_TYPES]);
 
 export type ParseStatus = "ok" | "unknown_type" | "malformed";
@@ -87,6 +87,20 @@ function classifyLine(line: string): { status: ParseStatus; ts: string | null } 
 
   if (typeField && KNOWN_EVENT_TYPES.has(typeField)) return { status: "ok", ts };
   return { status: "unknown_type", ts };
+}
+
+/** Accept the old attemptId\tseq\tjson envelope while writing new logs as plain provider NDJSON. */
+function unwrapRawLogLine(line: string): string {
+  const firstTab = line.indexOf("\t");
+  const secondTab = firstTab === -1 ? -1 : line.indexOf("\t", firstTab + 1);
+  if (firstTab === -1 || secondTab === -1) return line;
+  const candidate = line.slice(secondTab + 1);
+  try {
+    JSON.parse(candidate);
+    return candidate;
+  } catch {
+    return line;
+  }
 }
 
 interface WorktreeState {
@@ -429,7 +443,8 @@ export async function rebuildIndex(dbPath: string, runsRoot: string): Promise<Re
       if (raw.endsWith("\n")) lines = lines.slice(0, -1);
 
       lines.forEach((line, seq) => {
-        const { status, ts } = classifyLine(line);
+        const rawText = unwrapRawLogLine(line);
+        const { status, ts } = classifyLine(rawText);
         db.transaction(() => {
           insertRawEvent.run({
             runId,
@@ -438,7 +453,7 @@ export async function rebuildIndex(dbPath: string, runsRoot: string): Promise<Re
             ts: ts ?? fileMtime,
             provider,
             cliVersion,
-            rawText: line,
+            rawText,
             parseStatus: status,
           });
         })();

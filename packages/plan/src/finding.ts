@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ModelSession } from "./model-session.js";
+import { DEFAULT_SESSION_DIRECTIVE } from "./session-directive.js";
 
 export interface FindingEvidence {
   file: string;
@@ -12,6 +13,8 @@ export interface Finding {
   title: string;
   evidence: FindingEvidence[];
   summary: string;
+  /** The Claude session that produced this finding, when available. */
+  sessionId?: string;
 }
 
 const FINDING_SCHEMA = {
@@ -39,12 +42,16 @@ export interface RunFindingOptions {
   cwd: string;
   description: string;
   attemptId: string;
+  dangerouslySkipPermissions?: boolean;
+  rawLogPath?: string;
 }
 
 function buildFindingPrompt(description: string): string {
   return [
     "You are investigating a bug/task in the repository at the current working directory.",
     "Use your own tools (reading files, grepping, etc.) to locate the root cause.",
+    "",
+    DEFAULT_SESSION_DIRECTIVE,
     "",
     `Task description: ${description}`,
     "",
@@ -106,8 +113,10 @@ export async function runFinding(session: ModelSession, opts: RunFindingOptions)
     cwd: opts.cwd,
     prompt: buildFindingPrompt(opts.description),
     schema: FINDING_SCHEMA,
+    dangerouslySkipPermissions: opts.dangerouslySkipPermissions,
+    rawLogPath: opts.rawLogPath,
     attemptId: opts.attemptId,
   });
   const parsed = parseFinding(result.text);
-  return { findingId: randomUUID(), ...parsed };
+  return { findingId: randomUUID(), ...parsed, sessionId: result.sessionId };
 }

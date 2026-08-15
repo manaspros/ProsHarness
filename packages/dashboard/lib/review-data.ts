@@ -33,6 +33,29 @@ export function parseLatestEventOfKind<T>(db: Database.Database, runId: string, 
   return JSON.parse(row.payload_json) as T;
 }
 
+export interface PlanOperationStatus {
+  operation: "plan_pipeline" | "codex_review" | "claude_refinement" | "implementation";
+  state: "running" | "success" | "failed";
+  error?: string;
+}
+
+/** Returns the latest durable plan/implementation operation transition. */
+export function getPlanOperationStatus(db: Database.Database, runId: string): PlanOperationStatus | undefined {
+  const row = db
+    .prepare(
+      `SELECT kind, payload_json FROM events WHERE run_id = ? AND kind IN ('plan_operation_started', 'plan_operation_completed') ORDER BY seq DESC LIMIT 1`,
+    )
+    .get(runId) as { kind: string; payload_json: string } | undefined;
+  if (!row) return undefined;
+  const payload = JSON.parse(row.payload_json) as { operation?: PlanOperationStatus["operation"]; outcome?: "success" | "failed"; error?: string };
+  if (!payload.operation) return undefined;
+  return {
+    operation: payload.operation,
+    state: row.kind === "plan_operation_started" ? "running" : payload.outcome ?? "failed",
+    error: payload.error,
+  };
+}
+
 export interface WorktreeInfo {
   repoRoot: string;
   worktreePath: string | null;

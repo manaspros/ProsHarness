@@ -145,6 +145,8 @@ export interface Gate2PipelineOptions {
   reapWorktreeOnSuccess?: boolean;
   /** The worktree's actual originating repo (where `git worktree add` was run from) -- defaults to `repoRoot`. Only used when `reapWorktreeOnSuccess` is true. */
   worktreeParentRepo?: string;
+  /** Permission policy selected for the run; the implementation context is fresh but uses the same explicit policy. */
+  dangerouslySkipPermissions?: boolean;
 }
 
 export interface Gate2PipelineResult {
@@ -197,6 +199,11 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
   }
 
   try {
+    // Gate 2 runs are unattended too. Keep the permission policy enforced at
+    // the production pipeline boundary so every fresh implementation,
+    // verification, and review Claude session gets the same behavior even if
+    // an older caller omitted the option.
+    const dangerouslySkipPermissions = true;
     const claudeSession = opts.claudeSession ?? new RealClaudeSession();
     const codexSession = opts.codexSession ?? new RealCodexSession();
     const verifierSession = opts.verifierSession ?? new RealClaudeSession();
@@ -243,6 +250,8 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
       attemptId: `${opts.runId}-implement`,
       repoRoot: opts.repoRoot,
       tokenCeiling: opts.tokenCeiling,
+      dangerouslySkipPermissions,
+      rawLogPath: path.join(opts.runDir, "attempts", `${opts.runId}-implement`, "raw.log"),
     });
 
     if (!implementResult.committed) {
@@ -261,7 +270,9 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
       runDir: opts.runDir,
       expectedFenceEpoch: fenceEpoch,
       attemptId: `${opts.runId}-verify`,
+      rawLogPath: path.join(opts.runDir, "attempts", `${opts.runId}-verify`, "raw.log"),
       tokenCeiling: opts.tokenCeiling,
+      dangerouslySkipPermissions,
     });
 
     // Durably record the verdict BEFORE checking outcome, so a failing
@@ -299,6 +310,8 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
       runId: opts.runId,
       attemptIdPrefix: opts.runId,
       tokenCeiling: opts.tokenCeiling,
+      dangerouslySkipPermissions,
+      rawLogPathForAttempt: (attemptId) => path.join(opts.runDir, "attempts", attemptId, "raw.log"),
     });
 
     // Same reasoning as verify_verdict above: recorded before the

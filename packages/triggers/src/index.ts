@@ -15,7 +15,7 @@ export { runTriggerCycle } from "./runner.js";
 export type { RealAdmitOptions } from "./admit.js";
 export { createRealOnNewSignal, withTokenCeiling, buildDescription } from "./admit.js";
 
-export type { LinearIssueFixture, LinearSourceOptions } from "./sources/linear.js";
+export type { LinearIssueFixture, LinearIssueQuery, LinearSourceOptions } from "./sources/linear.js";
 export { LinearSource } from "./sources/linear.js";
 export type { SlackMessageFixture, SlackSourceOptions } from "./sources/slack.js";
 export { SlackSource } from "./sources/slack.js";

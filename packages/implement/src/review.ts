@@ -17,7 +17,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
-import type { ModelSession, Objection, Severity } from "@pros/plan";
+import { DEFAULT_SESSION_DIRECTIVE, type ModelSession, type Objection, type Severity } from "@pros/plan";
 import { loadSkillBrief } from "@pros/agents";
 import type { TokenCeiling } from "@pros/lease";
 
@@ -99,7 +99,9 @@ export interface ReviewInput {
   /** Build e.g. `${attemptIdPrefix}-codex-review` / `${attemptIdPrefix}-ultrareview`. */
   attemptIdPrefix: string;
   rawLogPath?: string;
+  rawLogPathForAttempt?: (attemptId: string) => string;
   tokenCeiling?: TokenCeiling;
+  dangerouslySkipPermissions?: boolean;
 }
 
 export interface ReviewResult {
@@ -138,6 +140,8 @@ export async function runAdversarialReview(input: ReviewInput): Promise<ReviewRe
 
   const claudePrompt = [
     sharedContext,
+    DEFAULT_SESSION_DIRECTIVE,
+    "",
     "You are the fresh `claude ultrareview` self-review pass (step 2 of the procedure above) -- a fresh context,",
     "not the session that wrote this diff. Hunt specifically for what an adversarial reviewer would flag that the",
     "implementer, reasoning about its own work, would be structurally prone to miss: silent scope creep beyond the",
@@ -147,21 +151,26 @@ export async function runAdversarialReview(input: ReviewInput): Promise<ReviewRe
     'Conclude with a single JSON object (matching the provided schema): {"objections":[{"severity":"blocker|major|minor",',
     '"claim":"...","suggested_change":"..."}]}. If you have no objections, return an empty array.',
   ].join("\n");
+  const codexAttemptId = `${input.attemptIdPrefix}-codex-review`;
+  const claudeAttemptId = `${input.attemptIdPrefix}-ultrareview`;
+  const rawLogPath = (attemptId: string): string | undefined => input.rawLogPathForAttempt?.(attemptId) ?? input.rawLogPath;
 
   const [codexResult, claudeResult] = await Promise.all([
     input.codexSession.run({
       cwd: input.worktreePath,
       prompt: codexPrompt,
       schema: OBJECTIONS_SCHEMA,
-      attemptId: `${input.attemptIdPrefix}-codex-review`,
-      rawLogPath: input.rawLogPath,
+      attemptId: codexAttemptId,
+      rawLogPath: rawLogPath(codexAttemptId),
+      dangerouslySkipPermissions: input.dangerouslySkipPermissions,
     }),
     input.claudeSession.run({
       cwd: input.worktreePath,
       prompt: claudePrompt,
       schema: OBJECTIONS_SCHEMA,
-      attemptId: `${input.attemptIdPrefix}-ultrareview`,
-      rawLogPath: input.rawLogPath,
+      attemptId: claudeAttemptId,
+      rawLogPath: rawLogPath(claudeAttemptId),
+      dangerouslySkipPermissions: input.dangerouslySkipPermissions,
     }),
   ]);
 

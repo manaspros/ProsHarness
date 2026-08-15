@@ -50,6 +50,7 @@ export interface IndependentAssessmentOptions {
   cwd: string;
   finding: Finding;
   attemptId: string;
+  rawLogPath?: string;
 }
 
 /**
@@ -73,7 +74,13 @@ export async function independentAssessment(
     '  - "risks": an array of specific risks/edge cases you would want any implementation plan to address',
   ].join("\n");
 
-  const result = await codexSession.run({ cwd: opts.cwd, prompt, schema: ASSESSMENT_SCHEMA, attemptId: opts.attemptId });
+  const result = await codexSession.run({
+    cwd: opts.cwd,
+    prompt,
+    schema: ASSESSMENT_SCHEMA,
+    rawLogPath: opts.rawLogPath,
+    attemptId: opts.attemptId,
+  });
   let assessment: unknown;
   try {
     assessment = JSON.parse(result.text);
@@ -91,6 +98,7 @@ export interface CritiqueObjectionsOptions {
   /** Round 2+: re-attack ONLY these previously-unresolved objections, not fresh ones. */
   unresolvedOnly?: Objection[];
   attemptId: string;
+  rawLogPath?: string;
 }
 
 /**
@@ -144,6 +152,7 @@ export async function critiqueObjections(codexSession: ModelSession, opts: Criti
     cwd: opts.cwd,
     prompt: parts.join("\n"),
     schema: OBJECTIONS_SCHEMA,
+    rawLogPath: opts.rawLogPath,
     attemptId: opts.attemptId,
   });
 

@@ -4,7 +4,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnClaude, spawnCodex, type ParsedEvent } from "@pros/adapters";
@@ -17,24 +17,72 @@ async function collectEvents(events: AsyncIterable<ParsedEvent>): Promise<Parsed
   return out;
 }
 
+async function prepareRawLog(rawLogPath: string | undefined, provider: "claude" | "codex"): Promise<void> {
+  if (!rawLogPath) return;
+  const attemptDir = path.dirname(rawLogPath);
+  await mkdir(attemptDir, { recursive: true });
+  await writeFile(path.join(attemptDir, "provider.txt"), `${provider}\n`, "utf8");
+}
+
+/**
+ * Codex's `--output-schema` uses strict structured-output validation. OpenAI's
+ * strict schema dialect requires every object to reject undeclared keys and
+ * every declared property to be required. The Claude-facing schemas in this
+ * repository intentionally omit those keywords, so normalize a deep copy at
+ * the Codex boundary instead of forcing every shared schema to carry
+ * provider-specific details.
+ */
+export function toCodexStrictSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(toCodexStrictSchema);
+  if (typeof value !== "object" || value === null) return value;
+
+  const source = value as Record<string, unknown>;
+  const copy: Record<string, unknown> = { ...source };
+
+  if (source.properties && typeof source.properties === "object" && !Array.isArray(source.properties)) {
+    const sourceProperties = source.properties as Record<string, unknown>;
+    copy.properties = Object.fromEntries(
+      Object.entries(sourceProperties).map(([key, property]) => [key, toCodexStrictSchema(property)]),
+    );
+    copy.required = Object.keys(sourceProperties);
+    copy.additionalProperties = false;
+  } else if (source.type === "object") {
+    copy.additionalProperties = false;
+  }
+
+  for (const key of ["items", "contains", "not", "if", "then", "else", "propertyNames"]) {
+    if (key in copy) copy[key] = toCodexStrictSchema(copy[key]);
+  }
+  for (const key of ["anyOf", "allOf", "oneOf", "prefixItems"]) {
+    if (Array.isArray(copy[key])) copy[key] = copy[key].map(toCodexStrictSchema);
+  }
+
+  return copy;
+}
+
 export class RealClaudeSession implements ModelSession {
   readonly provider = "claude" as const;
 
   async run(opts: ModelRunOptions): Promise<ModelRunResult> {
     const extraArgs: string[] = [];
     if (opts.schema) extraArgs.push("--json-schema", JSON.stringify(opts.schema));
+    await prepareRawLog(opts.rawLogPath, "claude");
 
-    const { events, exitCode } = spawnClaude({
+    const { events, exitCode, stderr } = spawnClaude({
       cwd: opts.cwd,
       prompt: opts.prompt,
       resumeSessionId: opts.resumeSessionId,
+      // All dashboard/CLI Claude sessions are unattended. Keep this policy
+      // at the real-session boundary so newly-added callers cannot
+      // accidentally reintroduce an approval prompt that stalls a run.
+      dangerouslySkipPermissions: true,
       extraArgs,
       rawLogPath: opts.rawLogPath,
       attemptId: opts.attemptId,
     });
 
     const collected = await collectEvents(events);
-    await exitCode;
+    const [exitCodeValue, stderrText] = await Promise.all([exitCode, stderr]);
 
     // The terminal event for a Claude `-p` run is `type: "result"`; its
     // `result` field carries the final assistant text (schema-constrained
@@ -45,10 +93,16 @@ export class RealClaudeSession implements ModelSession {
     if (!resultEvent || resultEvent.parseStatus !== "ok" || !resultEvent.data) {
       throw new Error(
         `RealClaudeSession: no terminal "result" event found in claude output (attemptId=${opts.attemptId}); ` +
-          `saw ${collected.length} events, last type=${collected[collected.length - 1]?.type ?? "<none>"}`,
+          `exitCode=${exitCodeValue ?? "unknown"}; saw ${collected.length} events, ` +
+          `last type=${collected[collected.length - 1]?.type ?? "<none>"}` +
+          (stderrText.trim() ? `; stderr: ${stderrText.trim()}` : ""),
       );
     }
     const data = resultEvent.data as Record<string, unknown>;
+    if (data.is_error === true) {
+      const reason = typeof data.result === "string" && data.result.trim() ? data.result.trim() : JSON.stringify(data);
+      throw new Error(`RealClaudeSession: Claude reported a failed turn (attemptId=${opts.attemptId}): ${reason}`);
+    }
     const usageRaw = (data.usage as Record<string, unknown> | undefined) ?? {};
     const usage: ModelUsage = {
       inputTokens: Number(usageRaw.input_tokens ?? 0),
@@ -72,22 +126,26 @@ export class RealCodexSession implements ModelSession {
       // Codex's --output-schema wants a real file path, not inline JSON.
       schemaTmpDir = await mkdtemp(path.join(tmpdir(), "pros-codex-schema-"));
       const schemaPath = path.join(schemaTmpDir, "schema.json");
-      await writeFile(schemaPath, JSON.stringify(opts.schema));
+      await writeFile(schemaPath, JSON.stringify(toCodexStrictSchema(opts.schema)));
       extraArgs.push("--output-schema", schemaPath);
     }
 
     try {
-      const { events, exitCode } = spawnCodex({
+      await prepareRawLog(opts.rawLogPath, "codex");
+      const { events, exitCode, stderr } = spawnCodex({
         cwd: opts.cwd,
         prompt: opts.prompt,
         resumeSessionId: opts.resumeSessionId,
+        // Automated Codex assessment/review is also unattended. This keeps
+        // it from failing solely because it cannot ask the user for approval.
+        dangerouslySkipPermissions: true,
         extraArgs,
         rawLogPath: opts.rawLogPath,
         attemptId: opts.attemptId,
       });
 
       const collected = await collectEvents(events);
-      await exitCode;
+      const [exitCodeValue, stderrText] = await Promise.all([exitCode, stderr]);
 
       // The final agent text arrives in an `item.completed` event whose
       // `item.type === "agent_message"`; usage arrives separately in the
@@ -97,11 +155,25 @@ export class RealCodexSession implements ModelSession {
         .reverse()
         .find((e) => e.type === "item.completed" && (e.data as any)?.item?.type === "agent_message");
       const turnCompleted = [...collected].reverse().find((e) => e.type === "turn.completed");
+      const turnFailed = [...collected].reverse().find((e) => e.type === "turn.failed");
+
+      if (turnFailed) {
+        const failedData = turnFailed.data as Record<string, unknown> | undefined;
+        const failure = failedData?.error ?? failedData?.message ?? failedData?.reason ?? failedData;
+        const detail = typeof failure === "string" ? failure : JSON.stringify(failure ?? turnFailed.raw);
+        throw new Error(
+          `RealCodexSession: Codex turn failed (attemptId=${opts.attemptId}, exitCode=${exitCodeValue ?? "unknown"}): ` +
+            `${detail}` +
+            (stderrText.trim() ? `; stderr: ${stderrText.trim()}` : ""),
+        );
+      }
 
       if (!messageEvent || messageEvent.parseStatus !== "ok") {
         throw new Error(
           `RealCodexSession: no "item.completed" agent_message event found in codex output (attemptId=${opts.attemptId}); ` +
-            `saw ${collected.length} events, last type=${collected[collected.length - 1]?.type ?? "<none>"}`,
+            `exitCode=${exitCodeValue ?? "unknown"}; saw ${collected.length} events, ` +
+            `last type=${collected[collected.length - 1]?.type ?? "<none>"}` +
+            (stderrText.trim() ? `; stderr: ${stderrText.trim()}` : ""),
         );
       }
       const text = String((messageEvent.data as any).item.text ?? "");

@@ -54,8 +54,8 @@ export default async function ReviewPage({ params }: { params: Promise<{ runId: 
   }
 
   const backLink = (
-    <Link href={`/runs/${encodeURIComponent(runId)}`} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-      <ArrowLeft className="h-3.5 w-3.5" /> run overview
+    <Link href="/pr-checks" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+      <ArrowLeft className="h-3.5 w-3.5" /> all PR checks
     </Link>
   );
 
@@ -64,7 +64,7 @@ export default async function ReviewPage({ params }: { params: Promise<{ runId: 
     return (
       <div className="space-y-6">
         {backLink}
-        <SectionHeading title="Review" description={<code>{runId}</code>} />
+        <SectionHeading title="PR check" description={<code>{runId}</code>} />
         <Surface elevation="raised">
           <EmptyState
             icon={<GitBranch className="h-8 w-8" />}
@@ -86,7 +86,7 @@ export default async function ReviewPage({ params }: { params: Promise<{ runId: 
     return (
       <div className="space-y-6">
         {backLink}
-        <SectionHeading title="Review" description={<code>{runId}</code>} />
+        <SectionHeading title="PR check" description={<code>{runId}</code>} />
 
         <Surface elevation="raised">
           <EmptyState
@@ -148,7 +148,7 @@ export default async function ReviewPage({ params }: { params: Promise<{ runId: 
     return (
       <div className="space-y-6">
         {backLink}
-        <SectionHeading title="Review" description={<code>{runId}</code>} />
+        <SectionHeading title="PR check" description={<code>{runId}</code>} />
         <Alert variant="error">
           Could not compute the risk-ranked diff for this PR: {err instanceof Error ? err.message : String(err)}
         </Alert>
@@ -173,7 +173,7 @@ export default async function ReviewPage({ params }: { params: Promise<{ runId: 
     <div className="space-y-6">
       {backLink}
       <SectionHeading
-        title="Review"
+        title="PR check"
         description={<code>{runId}</code>}
         action={
           <a

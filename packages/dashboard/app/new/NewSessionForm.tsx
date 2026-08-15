@@ -2,12 +2,11 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
+import { ChevronUp, Folder, FolderOpen, Loader2, Paperclip, Send, SlidersHorizontal, Sparkles } from "lucide-react";
 
 import { Surface } from "@/components/Surface";
 import { SectionHeading } from "@/components/SectionHeading";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -18,8 +17,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-
-const DEFAULT_REPO_ROOT = "/home/manas/Code/ProsHarness";
 
 type TriggerSourceId = "manual" | "sweep" | "linear" | "slack" | "granola";
 
@@ -67,6 +64,8 @@ const SCAN_LABELS: Record<Exclude<TriggerSourceId, "manual">, string> = {
   granola: "Scan Granola notes",
 };
 
+const DEFAULT_SESSION_PROMPT = "Explore the codebase with a Sonnet subagent, gather the findings and surrounding context, always use subagents when available, then verify the findings before planning.";
+
 /** A trimmed-down view of @pros/triggers' Signal, just the fields the form needs. */
 interface ScannedSignal {
   sourceId: string;
@@ -76,6 +75,19 @@ interface ScannedSignal {
   body: string;
   url?: string;
   evidence?: { file: string; line: number };
+}
+
+interface BrowseDirectoryEntry {
+  name: string;
+  path: string;
+}
+
+interface BrowseDirectoryResponse {
+  ok: true;
+  currentPath: string;
+  parentPath?: string;
+  isGitRepo: boolean;
+  directories: BrowseDirectoryEntry[];
 }
 
 function describeSignal(signal: ScannedSignal): string {
@@ -92,12 +104,18 @@ function describeSignal(signal: ScannedSignal): string {
 export interface NewSessionFormProps {
   /** True when there are literally zero runs anywhere yet -- widens the framing copy. */
   isFirstRun: boolean;
+  /** Server-resolved default target, so the form works when launched from another checkout. */
+  defaultRepoRoot: string;
+  /** Optional context passed from the session workspace's Linear ticket picker. */
+  initialDescription?: string;
+  initialWorkspace?: string;
+  ticketIdentifier?: string;
 }
 
-export function NewSessionForm({ isFirstRun }: NewSessionFormProps) {
+export function NewSessionForm({ isFirstRun, defaultRepoRoot, initialDescription, initialWorkspace, ticketIdentifier }: NewSessionFormProps) {
   const router = useRouter();
-  const [repoRoot, setRepoRoot] = React.useState(DEFAULT_REPO_ROOT);
-  const [description, setDescription] = React.useState("");
+  const [repoRoot, setRepoRoot] = React.useState(initialWorkspace || defaultRepoRoot);
+  const [description, setDescription] = React.useState(initialDescription || "");
   const [source, setSource] = React.useState<TriggerSourceId>("manual");
   const [confirmOpen, setConfirmOpen] = React.useState(false);
   const [launching, setLaunching] = React.useState(false);
@@ -110,8 +128,55 @@ export function NewSessionForm({ isFirstRun }: NewSessionFormProps) {
   // read-only Claude/MCP call. Sweep's scan is local/free and skips it.
   const [scanConfirmOpen, setScanConfirmOpen] = React.useState(false);
 
+  const [folderPickerOpen, setFolderPickerOpen] = React.useState(false);
+  const [browse, setBrowse] = React.useState<BrowseDirectoryResponse | undefined>(undefined);
+  const [browsing, setBrowsing] = React.useState(false);
+  const [browseError, setBrowseError] = React.useState<string | undefined>(undefined);
+
   const selected = TRIGGER_SOURCES.find((s) => s.id === source)!;
   const canSubmit = repoRoot.trim().length > 0 && description.trim().length > 0 && !launching;
+
+  React.useEffect(() => {
+    if (!initialWorkspace) {
+      const savedWorkspace = window.localStorage.getItem("pros:default-workspace");
+      if (savedWorkspace) setRepoRoot(savedWorkspace);
+    }
+    if (initialDescription) setDescription(initialDescription);
+  }, [initialDescription, initialWorkspace]);
+
+  async function browseTo(directory: string) {
+    setBrowsing(true);
+    setBrowseError(undefined);
+    try {
+      const res = await fetch(`/api/new/browse?path=${encodeURIComponent(directory)}`);
+      const data = await res.json();
+      if (!res.ok || data.ok !== true) {
+        setBrowseError(data?.error ?? `could not browse folder (HTTP ${res.status})`);
+        return;
+      }
+      setBrowse(data as BrowseDirectoryResponse);
+    } catch (err: any) {
+      setBrowseError(err?.message ?? String(err));
+    } finally {
+      setBrowsing(false);
+    }
+  }
+
+  function openFolderPicker() {
+    setFolderPickerOpen(true);
+    void browseTo(repoRoot.trim() || defaultRepoRoot);
+  }
+
+  function saveDefaultWorkspace() {
+    const value = repoRoot.trim();
+    if (!value) {
+      setError("Choose or enter a workspace folder first.");
+      return;
+    }
+    window.localStorage.setItem("pros:default-workspace", value);
+    setNotice("Default workspace saved on this device.");
+    setError(undefined);
+  }
 
   async function launch() {
     setLaunching(true);
@@ -125,7 +190,7 @@ export function NewSessionForm({ isFirstRun }: NewSessionFormProps) {
         // scanned finding below -- launching is always a manual finding
         // submission: the trigger-source tabs choose *how the description
         // got here*, not a different launch mechanism from this form.
-        body: JSON.stringify({ repoRoot, description, source: "manual" }),
+        body: JSON.stringify({ repoRoot, description, source: "manual", dangerouslySkipPermissions: true }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -138,9 +203,10 @@ export function NewSessionForm({ isFirstRun }: NewSessionFormProps) {
         setLaunching(false);
         return;
       }
-      // data.ok === true, data.runId present -- land on the run page right
-      // away; the pipeline keeps running in the background.
-      router.push(`/runs/${encodeURIComponent(data.runId)}`);
+      // data.ok === true, data.runId present -- land on Plan Review right
+      // away. The plan pipeline keeps running in the background, and the
+      // plan page refreshes itself until Gate 1 is ready.
+      router.push(`/runs/${encodeURIComponent(data.runId)}/plan?pending=1`);
     } catch (err: any) {
       setError(err?.message ?? String(err));
       setLaunching(false);
@@ -214,126 +280,136 @@ export function NewSessionForm({ isFirstRun }: NewSessionFormProps) {
   }
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-6">
+    <div className="mx-auto flex max-w-4xl flex-col gap-6">
       <SectionHeading
         as="h1"
-        title="New session"
+        className="border-0 pb-0"
+        title={<span className="flex items-center gap-2"><Sparkles className="h-5 w-5 text-primary" /> New session</span>}
         description={
-          isFirstRun
-            ? "Start here: describe a finding (or paste one), and this launches a real plan run -- finding → draft plan → Codex critique/debate → parked at Gate 1 for your approval. Nothing lands or ships without that approval."
-            : "Pick or enter a repo, describe a finding, choose a trigger source, and launch a plan run."
+          ticketIdentifier
+            ? `Ready to work on ${ticketIdentifier}. Review the context, then send it to the planning agents.`
+            : isFirstRun
+              ? "Describe what you want to change. Pros will investigate, draft a plan, and pause for your approval before implementation."
+              : "Give the agents a finding, bug, or ticket to investigate."
         }
       />
 
-      <Surface elevation="raised" className="p-6 md:p-8">
-        <form onSubmit={onSubmit} className="flex flex-col gap-6">
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="repoRoot">Repository</Label>
-            <Input
-              id="repoRoot"
-              value={repoRoot}
-              onChange={(e) => setRepoRoot(e.target.value)}
-              placeholder="/home/you/code/some-repo"
-              spellCheck={false}
-            />
-            <p className="text-xs text-muted-foreground">
-              Any local repo path works -- defaults to this repo
-              (<code>{DEFAULT_REPO_ROOT}</code>).
-            </p>
+      <Surface elevation="raised" className="overflow-hidden border-primary/20 p-0 shadow-panel-overlay">
+        <form onSubmit={onSubmit}>
+          <div className="flex items-center justify-between border-b border-border/70 px-5 py-3">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span className="rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 font-medium text-primary">Planning session</span>
+              <span className="hidden sm:inline">Claude + Codex will investigate before anything changes</span>
+            </div>
+            <span className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground/70">private workspace</span>
           </div>
 
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="description">Describe a finding, or paste one</Label>
+          <div className="p-5 md:p-7">
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-border bg-background/60 px-3 py-1.5 focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/30">
+                <FolderOpen className="h-3.5 w-3.5 shrink-0 text-primary" />
+                <input
+                  aria-label="Session workspace folder"
+                  value={repoRoot}
+                  onChange={(event) => setRepoRoot(event.target.value)}
+                  placeholder="/Users/you/Code/project"
+                  spellCheck={false}
+                  className="min-w-0 flex-1 bg-transparent font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground"
+                />
+                <button type="button" onClick={openFolderPicker} className="shrink-0 text-xs text-muted-foreground hover:text-foreground">
+                  Browse
+                </button>
+              </div>
+              <Button type="button" variant="outline" size="sm" onClick={saveDefaultWorkspace} className="shrink-0">
+                Save as default
+              </Button>
+            </div>
+
             <Textarea
               id="description"
+              autoFocus
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder={
-                'e.g. "sumAll() returns NaN for some inputs -- looks like an off-by-one loop bound" ' +
-                "or paste an issue/incident description verbatim."
-              }
-              rows={6}
+              placeholder="What would you like to work on? Describe the bug, feature, ticket, or question…"
+              rows={9}
+              className="min-h-[230px] resize-y border-0 bg-transparent px-0 py-2 text-base leading-7 shadow-none placeholder:text-muted-foreground/70 focus-visible:ring-0"
             />
+
+            <div className="mt-4 flex items-start gap-3 rounded-md border border-primary/20 bg-primary/[0.06] px-3 py-2.5">
+              <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-foreground">Default agent workflow is always included</p>
+                <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{DEFAULT_SESSION_PROMPT}</p>
+              </div>
+            </div>
           </div>
 
-          <div className="flex flex-col gap-2">
-            <Label>Trigger source</Label>
-            <Tabs
-              value={source}
-              onValueChange={(v) => {
-                setSource(v as TriggerSourceId);
-                setScanSignals(undefined);
-                setNotice(undefined);
-              }}
-            >
-              <TabsList className="h-auto flex-wrap justify-start gap-1 bg-muted/60 p-1">
-                {TRIGGER_SOURCES.map((s) => (
-                  <TabsTrigger key={s.id} value={s.id} className="text-xs">
-                    {s.label}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </Tabs>
-            <p className="text-xs text-muted-foreground">{selected.note}</p>
-
-            {source !== "manual" && (
-              <div className="flex flex-col gap-2 rounded-md border border-border/60 bg-muted/30 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-xs text-muted-foreground">
-                    Run this source for real and pick a finding to launch with.
-                  </span>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={scanning || (source === "sweep" && repoRoot.trim().length === 0)}
-                    onClick={onScanClick}
+          <div className="border-t border-border/70 px-5 py-3 md:px-7">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <details className="group">
+                <summary className="flex cursor-pointer list-none items-center gap-2 text-xs text-muted-foreground hover:text-foreground">
+                  <Paperclip className="h-3.5 w-3.5" /> Integrations
+                  <span className="rounded-full border border-border bg-background/60 px-2 py-0.5 text-[10px] text-foreground">Linear</span>
+                  <span className="rounded-full border border-border bg-background/60 px-2 py-0.5 text-[10px] text-foreground">Slack</span>
+                  <span className="hidden rounded-full border border-border bg-background/60 px-2 py-0.5 text-[10px] text-foreground sm:inline">Granola</span>
+                  <SlidersHorizontal className="h-3.5 w-3.5 transition-transform group-open:rotate-90" />
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-[10px]">{selected.label}</span>
+                </summary>
+                <div className="mt-3 rounded-md border border-border/70 bg-background/40 p-3">
+                  <Tabs
+                    value={source}
+                    onValueChange={(v) => {
+                      setSource(v as TriggerSourceId);
+                      setScanSignals(undefined);
+                      setNotice(undefined);
+                    }}
                   >
-                    {scanning ? "Scanning…" : SCAN_LABELS[source]}
-                  </Button>
+                    <TabsList className="h-auto flex-wrap justify-start gap-1 bg-muted/60 p-1">
+                      {TRIGGER_SOURCES.map((s) => <TabsTrigger key={s.id} value={s.id} className="text-xs">{s.label}</TabsTrigger>)}
+                    </TabsList>
+                  </Tabs>
+                  <p className="mt-2 text-xs text-muted-foreground">{selected.note}</p>
+                  {source !== "manual" && (
+                    <div className="mt-3 flex flex-col gap-2 rounded-md border border-border/60 bg-muted/30 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-xs text-muted-foreground">Run this source and pick a finding to add above.</span>
+                        <Button type="button" variant="outline" size="sm" disabled={scanning || (source === "sweep" && repoRoot.trim().length === 0)} onClick={onScanClick}>
+                          {scanning ? "Scanning…" : SCAN_LABELS[source]}
+                        </Button>
+                      </div>
+                      {scanSignals && scanSignals.length > 0 && (
+                        <ul className="flex flex-col gap-1">
+                          {scanSignals.map((signal) => (
+                            <li key={`${signal.sourceId}-${signal.externalId}`}>
+                              <button type="button" onClick={() => pickSignal(signal)} className="w-full rounded-md border border-border/60 bg-background px-2 py-1.5 text-left text-xs hover:bg-muted">
+                                <span className="font-medium">{signal.title}</span>
+                                {signal.evidence && <span className="text-muted-foreground"> -- {signal.evidence.file}:{signal.evidence.line}</span>}
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
                 </div>
-
-                {scanSignals && scanSignals.length > 0 && (
-                  <ul className="flex flex-col gap-1">
-                    {scanSignals.map((signal) => (
-                      <li key={`${signal.sourceId}-${signal.externalId}`}>
-                        <button
-                          type="button"
-                          onClick={() => pickSignal(signal)}
-                          className="w-full rounded-md border border-border/60 bg-background px-2 py-1.5 text-left text-xs hover:bg-muted"
-                        >
-                          <span className="font-medium">{signal.title}</span>
-                          {signal.evidence && (
-                            <span className="text-muted-foreground">
-                              {" "}
-                              -- {signal.evidence.file}:{signal.evidence.line}
-                            </span>
-                          )}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
+              </details>
+              <Button type="submit" disabled={!canSubmit} size="lg" className="gap-2 rounded-full px-5">
+                {launching ? "Starting…" : "Start working"}
+                {launching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              </Button>
+            </div>
           </div>
 
           {error && (
-            <div className="rounded-md border border-status-fail/30 bg-status-fail/10 px-3 py-2 text-sm text-status-fail">
+            <div className="mx-5 mb-4 rounded-md border border-status-fail/30 bg-status-fail/10 px-3 py-2 text-sm text-status-fail md:mx-7">
               {error}
             </div>
           )}
           {notice && (
-            <div className="rounded-md border border-status-parked/30 bg-status-parked/10 px-3 py-2 text-sm text-status-parked">
+            <div className="mx-5 mb-4 rounded-md border border-status-parked/30 bg-status-parked/10 px-3 py-2 text-sm text-status-parked md:mx-7">
               {notice}
             </div>
           )}
-
-          <div className="flex items-center justify-end gap-3">
-            <Button type="submit" disabled={!canSubmit} size="lg">
-              {launching ? "Launching…" : "Launch plan run"}
-            </Button>
-          </div>
         </form>
       </Surface>
 
@@ -348,6 +424,9 @@ export function NewSessionForm({ isFirstRun }: NewSessionFormProps) {
               <code>{repoRoot}</code>. It typically takes anywhere from tens
               of seconds to a few minutes, and parks at Gate 1 for your
               approval before anything is implemented.
+              <span className="mt-2 block text-status-parked">
+                Claude will run with permission checks disabled for this session.
+              </span>
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -389,6 +468,87 @@ export function NewSessionForm({ isFirstRun }: NewSessionFormProps) {
               }}
             >
               Scan
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={folderPickerOpen} onOpenChange={setFolderPickerOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Choose a repository folder</DialogTitle>
+            <DialogDescription>
+              Browse folders on the machine running ProsHarness, then select the current folder as the repository.
+            </DialogDescription>
+          </DialogHeader>
+
+          {browseError && (
+            <div className="rounded-md border border-status-fail/30 bg-status-fail/10 px-3 py-2 text-sm text-status-fail">
+              {browseError}
+            </div>
+          )}
+
+          <div className="rounded-md border border-border/60 bg-muted/20 p-3">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Folder className="h-3.5 w-3.5 shrink-0" />
+              <code className="min-w-0 flex-1 truncate">{browse?.currentPath ?? "Loading folder…"}</code>
+              {browse?.isGitRepo && (
+                <span className="shrink-0 rounded-full bg-status-pass/15 px-2 py-0.5 text-[10px] font-medium text-status-pass">
+                  Git repo
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="max-h-72 overflow-y-auto rounded-md border border-border/60">
+            {browsing && !browse ? (
+              <div className="flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" /> Loading folders…
+              </div>
+            ) : (
+              <div className="p-1">
+                {browse?.parentPath && (
+                  <button
+                    type="button"
+                    onClick={() => void browseTo(browse.parentPath!)}
+                    disabled={browsing}
+                    className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-sm text-muted-foreground hover:bg-muted disabled:opacity-50"
+                  >
+                    <ChevronUp className="h-4 w-4" /> ..
+                  </button>
+                )}
+                {browse && browse.directories.length === 0 && (
+                  <p className="p-3 text-sm text-muted-foreground">No child folders.</p>
+                )}
+                {browse?.directories.map((directory) => (
+                  <button
+                    key={directory.path}
+                    type="button"
+                    onClick={() => void browseTo(directory.path)}
+                    disabled={browsing}
+                    className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-sm text-foreground hover:bg-muted disabled:opacity-50"
+                  >
+                    <Folder className="h-4 w-4 text-muted-foreground" />
+                    <span className="truncate">{directory.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setFolderPickerOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={!browse || browsing}
+              onClick={() => {
+                if (!browse) return;
+                setRepoRoot(browse.currentPath);
+                setFolderPickerOpen(false);
+              }}
+            >
+              Use this folder
             </Button>
           </DialogFooter>
         </DialogContent>

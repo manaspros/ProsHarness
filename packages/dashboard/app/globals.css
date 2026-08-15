@@ -110,7 +110,10 @@
 /* ---------------------------------------------------------------------- */
 
 .paper-grain {
-  position: relative;
+  /* Positioning belongs to the component using the texture. Surface sets
+     `relative`, while dialogs and sheets must remain `fixed`; setting
+     `relative` here would override their layout and leave only the modal
+     blur overlay visible. */
 }
 
 .paper-grain::before {

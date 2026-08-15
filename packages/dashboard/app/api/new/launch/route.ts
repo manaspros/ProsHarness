@@ -23,8 +23,8 @@
  * start`/`next dev` stays alive independent of this request, so the
  * in-flight promise keeps running after the response is sent), and returns
  * `{ ok: true, runId }` immediately so the client can redirect to
- * `/runs/<runId>` right away and let that page's own polling reflect
- * progress as journal entries land.
+ * `/runs/<runId>/plan?pending=1` right away. That Plan Review page polls
+ * until the journal contains the Gate 1 plan and approval checkpoint.
  *
  * Only the "manual" trigger source actually launches a plan run here.
  * Sweep/Linear/Slack/Granola are real, wired sources (see
@@ -42,6 +42,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 import { runPlanPipeline } from "@pros/plan";
+import { Journal, loadRunState } from "@pros/barrier";
 import { getRunsRoot } from "../../../../lib/config";
 
 export type TriggerSourceId = "manual" | "sweep" | "linear" | "slack" | "granola";
@@ -74,6 +75,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const source = (body.source ?? "manual") as TriggerSourceId;
   const description = body.description?.trim() ?? "";
   const repoRoot = body.repoRoot?.trim() ?? "";
+  // The dashboard's session workflow always runs Claude Code with the
+  // permission bypass enabled. Keep this server-side so callers cannot
+  // accidentally reintroduce a UI toggle or forget the flag.
+  const dangerouslySkipPermissions = true;
 
   if (source !== "manual") {
     const reason = NOT_WIRED_REASONS[source as Exclude<TriggerSourceId, "manual">];
@@ -93,6 +98,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const runsRoot = getRunsRoot();
   const worktreesRoot = getWorktreesRoot();
   const runId = randomUUID();
+  await recordOperation(runsRoot, runId, "plan_pipeline", "started", undefined, "human", dangerouslySkipPermissions);
 
   // Fire-and-forget: do not await. Errors are logged server-side rather than
   // surfaced to this response, which has already promised a runId -- the
@@ -106,9 +112,36 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     runsRoot,
     description,
     runId,
-  }).catch((err) => {
+    dangerouslySkipPermissions,
+  }).then(() => recordOperation(runsRoot, runId, "plan_pipeline", "success")).catch((err) => {
     console.error(`[api/new/launch] runPlanPipeline failed for runId=${runId}:`, err);
+    return recordOperation(runsRoot, runId, "plan_pipeline", "failed", err instanceof Error ? err.message : String(err));
+  }).catch((err) => {
+    console.error(`[api/new/launch] could not record plan operation for runId=${runId}:`, err);
   });
 
   return NextResponse.json({ ok: true, runId });
+}
+
+async function recordOperation(
+  runsRoot: string,
+  runId: string,
+  operation: "plan_pipeline",
+  outcome: "started" | "success" | "failed",
+  error?: string,
+  requestedBy?: string,
+  dangerouslySkipPermissions?: boolean,
+): Promise<void> {
+  const runDir = path.join(runsRoot, runId);
+  const journal = await Journal.open(runDir);
+  try {
+    const fenceEpoch = (await loadRunState(runDir)).fenceEpoch;
+    await journal.append(
+      outcome === "started"
+        ? { runId, fenceEpoch, kind: "plan_operation_started", operation, requestedBy, dangerouslySkipPermissions }
+        : { runId, fenceEpoch, kind: "plan_operation_completed", operation, outcome, error },
+    );
+  } finally {
+    await journal.close();
+  }
 }

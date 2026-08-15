@@ -112,10 +112,10 @@ export const BOARD_STAGES: BoardStage[] = [
 export const STAGE_LABELS: Record<BoardStage, string> = {
   finding: "Finding",
   planning: "Planning",
-  awaiting_gate1: "Awaiting Gate 1",
+  awaiting_gate1: "Review plan",
   implementing: "Implementing",
   verifying: "Verifying",
-  awaiting_gate2: "Awaiting Gate 2",
+  awaiting_gate2: "PR check",
   // Deliberately not "Merged" -- see the file-level comment "On 'merged' vs
   // honesty": this system never observes an actual merge, only the human's
   // "reviewed" answer after they've handled the PR on GitHub themselves.

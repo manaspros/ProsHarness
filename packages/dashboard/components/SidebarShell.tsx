@@ -8,7 +8,10 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Command as CommandIcon,
+  ClipboardCheck,
+  GitPullRequest,
   ListTree,
+  MessageCircleQuestion,
   Plus,
   Repeat,
   Rows3,
@@ -48,14 +51,17 @@ export interface SidebarCounts {
 const NAV_ITEMS = [
   { href: "/", label: "Sessions", icon: Rows3 },
   { href: "/runs", label: "Runs", icon: ListTree },
+  { href: "/pr-checks", label: "PR checks", icon: GitPullRequest },
+  { href: "/plans", label: "Review plans", icon: ClipboardCheck },
+  { href: "/questions", label: "Questions", icon: MessageCircleQuestion },
   { href: "/loops", label: "Loops", icon: Repeat },
   { href: "/schedule", label: "Schedule", icon: Calendar },
   { href: "/skills", label: "Skills", icon: Wrench },
 ] as const;
 
 const NAV_GROUPS = [
-  { label: "Workspace", items: NAV_ITEMS.slice(0, 2) },
-  { label: "Signals", items: NAV_ITEMS.slice(2) },
+  { label: "Workspace", items: NAV_ITEMS.slice(0, 5) },
+  { label: "Signals", items: NAV_ITEMS.slice(5) },
 ] as const;
 
 export function SidebarShell({
@@ -284,6 +290,15 @@ export function SidebarShell({
             </CommandItem>
             <CommandItem onSelect={() => runPaletteAction("/runs")}>
               Runs
+            </CommandItem>
+            <CommandItem onSelect={() => runPaletteAction("/pr-checks")}>
+              PR checks
+            </CommandItem>
+            <CommandItem onSelect={() => runPaletteAction("/plans")}>
+              Review plans
+            </CommandItem>
+            <CommandItem onSelect={() => runPaletteAction("/questions")}>
+              Questions
             </CommandItem>
             <CommandItem onSelect={() => runPaletteAction("/loops")}>
               Loops

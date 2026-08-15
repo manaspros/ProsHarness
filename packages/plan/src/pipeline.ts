@@ -33,6 +33,8 @@ export interface PlanPipelineOptions {
    * process.env.PROS_SLACK_NOTIFY_TARGET, mirroring ntfyUrl's own fallback.
    */
   slackTarget?: string;
+  /** Retained for backwards-compatible callers; dashboard/CLI sessions always force this on. */
+  dangerouslySkipPermissions?: boolean;
 }
 
 export interface PlanPipelineResult {
@@ -73,6 +75,10 @@ export async function writeFileAtomic(finalPath: string, body: string): Promise<
  */
 export async function runPlanPipeline(opts: PlanPipelineOptions): Promise<PlanPipelineResult> {
   const runId = opts.runId ?? randomUUID();
+  // The operator has explicitly chosen an always-on Claude Code workflow.
+  // Normalize here so every entry point (dashboard, CLI, and triggers) gets
+  // the same behavior, even if an older caller omits the option.
+  const dangerouslySkipPermissions = true;
   const runDir = path.join(opts.runsRoot, runId);
   await mkdir(runDir, { recursive: true });
 
@@ -92,6 +98,8 @@ export async function runPlanPipeline(opts: PlanPipelineOptions): Promise<PlanPi
   const finding = await runFinding(claudeSession, {
     cwd: allocation.path,
     description: opts.description,
+    dangerouslySkipPermissions,
+    rawLogPath: path.join(runDir, "attempts", `${runId}-finding`, "raw.log"),
     attemptId: `${runId}-finding`,
   });
   await journal.append({
@@ -101,7 +109,19 @@ export async function runPlanPipeline(opts: PlanPipelineOptions): Promise<PlanPi
     findingId: finding.findingId,
     title: finding.title,
     evidenceJson: JSON.stringify(finding.evidence),
+    summary: finding.summary,
   });
+  if (finding.sessionId) {
+    await journal.append({
+      runId,
+      fenceEpoch,
+      kind: "model_session_recorded",
+      provider: "claude",
+      sessionId: finding.sessionId,
+      attemptId: `${runId}-finding`,
+      dangerouslySkipPermissions,
+    });
+  }
 
   const debate = await runDebate({
     claudeSession,
@@ -112,7 +132,21 @@ export async function runPlanPipeline(opts: PlanPipelineOptions): Promise<PlanPi
     runId,
     runDir,
     attemptIdPrefix: runId,
+    dangerouslySkipPermissions,
+    rawLogPathForAttempt: (attemptId) => path.join(runDir, "attempts", attemptId, "raw.log"),
   });
+
+  if (debate.finalPlan.sessionId) {
+    await journal.append({
+      runId,
+      fenceEpoch,
+      kind: "model_session_recorded",
+      provider: "claude",
+      sessionId: debate.finalPlan.sessionId,
+      attemptId: `${runId}-plan-v${debate.finalPlan.version}`,
+      dangerouslySkipPermissions,
+    });
+  }
 
   const planMarkdownPath = path.join(runDir, "plan.md");
   const objectionsJsonPath = path.join(runDir, "objections.json");
