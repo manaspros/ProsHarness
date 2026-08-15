@@ -2,7 +2,14 @@ import path from "node:path";
 import { WorktreeAllocator, type ReconcileReport } from "@pros/worktree";
 import { ConcurrencyLease } from "@pros/lease";
 import { reconcilePrOps, type PrOpsReconcileReport } from "@pros/implement";
-import { RealGhClient, loadCredentialFromEnv, type GhClient, type ScopedGhCredential } from "@pros/implement";
+import {
+  RealGhClient,
+  AmbientGhClient,
+  loadCredentialFromEnv,
+  checkGhAuthenticated,
+  type GhClient,
+  type GhCredential,
+} from "@pros/implement";
 
 export interface ReconcileArgs {
   runsRoot: string;
@@ -40,19 +47,26 @@ export interface ReconcileResult {
  *     freeing capacity a crashed run never released.
  *   - in-flight PR ops (via `@pros/implement`'s `reconcilePrOps`): a
  *     `pr_create_intent` journal entry with no matching `pr_created` is
- *     looked up against the real `gh` state (`findPrForBranch`) and either
- *     adopted (the PR genuinely exists -- a crash happened only in recording
- *     that fact) or surfaced as `needsManualRetry` (no PR was found -- this
- *     is never auto-retried, since "did creation already run" isn't reliably
- *     derivable after the fact; a human/operator re-runs the implementation
- *     stage). Requires `PROS_GH_PR_TOKEN` to be set (same credential the
- *     Gate 2 pipeline itself uses, see `packages/implement/src/pr.ts`'s doc
- *     comment) -- if it isn't set, this step is skipped and reported as such
- *     rather than failing the whole `pros reconcile` invocation, since
- *     worktree/lease recovery must not be held hostage by an optional
- *     credential the operator hasn't provisioned yet.
+ *     looked up against real `gh` state (`findPrForBranch` -- a read-only
+ *     lookup, safe either way) and either adopted (the PR genuinely exists --
+ *     a crash happened only in recording that fact) or surfaced as
+ *     `needsManualRetry` (no PR was found -- this is never auto-retried,
+ *     since "did creation already run" isn't reliably derivable after the
+ *     fact; a human/operator re-runs the implementation stage).
+ *
+ *     Credential/client precedence mirrors `runGate2Pipeline`'s: if
+ *     `PROS_GH_PR_TOKEN` is set, this step uses `RealGhClient` +
+ *     `loadCredentialFromEnv` per repo (today's exact behavior, unchanged).
+ *     If it is NOT set, it falls back to `AmbientGhClient` (the zero-token
+ *     path) after confirming the ambient `gh` session is actually
+ *     authenticated via `checkGhAuthenticated()` -- this step is only truly
+ *     skipped if EVEN the ambient `gh` session isn't authenticated either,
+ *     and that is reported explicitly (not silently) via `prOps.skipped`.
+ *     Either way, a failure here is caught and reported as `skipped` rather
+ *     than thrown, since worktree/lease recovery must not be held hostage by
+ *     an optional credential/session the operator hasn't provisioned yet.
  */
-export async function runReconcile(args: ReconcileArgs, ghClient: GhClient = new RealGhClient()): Promise<ReconcileResult> {
+export async function runReconcile(args: ReconcileArgs, ghClient?: GhClient): Promise<ReconcileResult> {
   const allocator = new WorktreeAllocator({
     repoRoot: process.cwd(), // unused by reconcile() -- each allocation's own journal entry carries its real repoRoot
     worktreesRoot: args.worktreesRoot,
@@ -63,24 +77,38 @@ export async function runReconcile(args: ReconcileArgs, ghClient: GhClient = new
 
   let prOps: ReconcileResult["prOps"];
   try {
-    const credentials = new Map<string, ScopedGhCredential>();
+    const usingScopedToken = !!process.env.PROS_GH_PR_TOKEN;
+    let client: GhClient;
+    if (ghClient) {
+      client = ghClient;
+    } else if (usingScopedToken) {
+      client = new RealGhClient();
+    } else {
+      await checkGhAuthenticated();
+      client = new AmbientGhClient();
+    }
+
+    const credentials = new Map<string, GhCredential>();
     prOps = await reconcilePrOps({
       runsRoot: args.runsRoot,
-      ghClient,
+      ghClient: client,
       credentialFor: (repo: string) => {
         let cred = credentials.get(repo);
         if (!cred) {
-          cred = loadCredentialFromEnv(repo);
+          cred = usingScopedToken ? loadCredentialFromEnv(repo) : { repo };
           credentials.set(repo, cred);
         }
         return cred;
       },
     });
   } catch (err) {
-    // Most commonly: PROS_GH_PR_TOKEN is unset (loadCredentialFromEnv throws
-    // lazily, the first time credentialFor() is actually called for some
-    // repo -- if there are no pr_create_intent entries at all, this whole
-    // try block never even calls credentialFor and succeeds trivially).
+    // Most commonly: neither PROS_GH_PR_TOKEN nor an authenticated ambient
+    // `gh` session is available (loadCredentialFromEnv throws lazily, the
+    // first time credentialFor() is actually called for some repo, and
+    // checkGhAuthenticated() throws eagerly above if defaulting to the
+    // ambient path -- if there are no pr_create_intent entries at all, this
+    // whole try block never even reaches either check and succeeds
+    // trivially).
     prOps = { skipped: err instanceof Error ? err.message : String(err) };
   }
 

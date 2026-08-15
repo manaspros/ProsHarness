@@ -47,9 +47,11 @@ import { ConcurrencyLease, TokenCeiling } from "@pros/lease";
 import {
   type GhClient,
   type PrHandle,
-  type ScopedGhCredential,
+  type GhCredential,
   RealGhClient,
+  AmbientGhClient,
   loadCredentialFromEnv,
+  checkGhAuthenticated,
 } from "./pr.js";
 import { runImplementation, type ImplementResult } from "./implement.js";
 import { runVerification, type Verdict } from "./verify.js";
@@ -98,10 +100,20 @@ export interface Gate2PipelineOptions {
   codexSession?: ModelSession;
   /** Defaults to a SEPARATE new RealClaudeSession() instance -- never sharing a resumeSessionId with claudeSession. */
   verifierSession?: ModelSession;
-  /** Defaults to new RealGhClient(). */
+  /**
+   * Defaults to `new RealGhClient()` if `PROS_GH_PR_TOKEN` is set (today's
+   * behavior, unchanged); otherwise defaults to `new AmbientGhClient()` (the
+   * zero-token path -- see pr.ts's "AMBIENT PATH" doc comment), after running
+   * `checkGhAuthenticated()` as a preflight.
+   */
   ghClient?: GhClient;
-  /** Defaults to loadCredentialFromEnv(<owner/repo derived from `git remote get-url origin`>). */
-  ghCredential?: ScopedGhCredential;
+  /**
+   * Defaults to `loadCredentialFromEnv(<owner/repo derived from `git remote
+   * get-url origin`>)` when `PROS_GH_PR_TOKEN` is set; otherwise defaults to
+   * `{ repo: <same owner/repo> }` (an `AmbientGhCredential`), paired with the
+   * `AmbientGhClient` default above.
+   */
+  ghCredential?: GhCredential;
   /** If given, acquire+heartbeat+release a ConcurrencyLease around the whole pipeline; if omitted, skip lease entirely. */
   leaseDir?: string;
   /** Required if leaseDir given. */
@@ -188,7 +200,26 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
     const claudeSession = opts.claudeSession ?? new RealClaudeSession();
     const codexSession = opts.codexSession ?? new RealCodexSession();
     const verifierSession = opts.verifierSession ?? new RealClaudeSession();
-    const ghClient = opts.ghClient ?? new RealGhClient();
+
+    // Precedence: if PROS_GH_PR_TOKEN is set, keep today's exact behavior
+    // (RealGhClient + loadCredentialFromEnv) -- the stronger, server-enforced
+    // path. If it is NOT set, fall back to the zero-token ambient path
+    // (AmbientGhClient), after a preflight that fails fast (before spending
+    // time on implement/verify/review) if the operator's ambient `gh` session
+    // isn't actually authenticated either. Either half is independently
+    // overridable via explicit `ghClient`/`ghCredential` options, exactly as
+    // before -- this is what lets tests inject `LocalGhStub`/local ambient
+    // stubs without touching real env state or a real `gh` binary.
+    const usingScopedToken = !!process.env.PROS_GH_PR_TOKEN;
+    let ghClient: GhClient;
+    if (opts.ghClient) {
+      ghClient = opts.ghClient;
+    } else if (usingScopedToken) {
+      ghClient = new RealGhClient();
+    } else {
+      await checkGhAuthenticated();
+      ghClient = new AmbientGhClient();
+    }
 
     const fenceEpoch = (await loadRunState(opts.runDir)).fenceEpoch;
 
@@ -294,7 +325,11 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
 
     // ---- Open the draft PR ----
 
-    const cred = opts.ghCredential ?? loadCredentialFromEnv(await deriveRepoSlug(opts.worktreePath));
+    const cred: GhCredential =
+      opts.ghCredential ??
+      (usingScopedToken
+        ? loadCredentialFromEnv(await deriveRepoSlug(opts.worktreePath))
+        : { repo: await deriveRepoSlug(opts.worktreePath) });
 
     const unresolvedNonBlockers = review.objections.filter((o) => o.severity !== "blocker");
     const bodyLines = [
@@ -450,7 +485,7 @@ export async function reconcilePrOps(opts: {
   runsRoot: string;
   ghClient: GhClient;
   /** Caller supplies how to get a credential per repo, since different runs may target different repos. */
-  credentialFor: (repo: string) => ScopedGhCredential;
+  credentialFor: (repo: string) => GhCredential;
 }): Promise<PrOpsReconcileReport> {
   const report: PrOpsReconcileReport = { adopted: [], needsManualRetry: [], alreadyOk: [] };
 

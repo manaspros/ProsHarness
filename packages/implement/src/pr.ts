@@ -162,13 +162,24 @@ export interface PrHandle {
   headSha: string;
 }
 
+/**
+ * Any credential a `GhClient` implementation can be driven with.
+ * `RealGhClient`/`LocalGhStub` only ever receive a `ScopedGhCredential` in
+ * practice (their scope checks require the `.scopes` field); `AmbientGhClient`
+ * only ever receives an `AmbientGhCredential` (see the "AMBIENT PATH" doc
+ * comment further down). The union lives on the shared `GhClient` interface
+ * so callers that don't know which concrete client they hold (e.g.
+ * `pipeline.ts`'s default-selection logic, `reconcile.ts`) can pass either.
+ */
+export type GhCredential = ScopedGhCredential | AmbientGhCredential;
+
 export interface GhClient {
   /**
    * Requires "pull_requests:write" scope. Throws GhPermissionError if the
    * credential lacks it -- checked BEFORE shelling out/hitting the network,
    * so the check is meaningful even against a stub.
    */
-  createDraftPr(cred: ScopedGhCredential, input: DraftPrInput): Promise<PrHandle>;
+  createDraftPr(cred: GhCredential, input: DraftPrInput): Promise<PrHandle>;
 
   /**
    * Requires "contents:write" scope (mirrors GitHub's real merge-endpoint
@@ -176,13 +187,13 @@ export interface GhClient {
    * provably real and testable -- the production Gate 2 pipeline (built by a
    * teammate in a follow-up pass) must never call it.
    */
-  mergePr(cred: ScopedGhCredential, pr: PrHandle): Promise<void>;
+  mergePr(cred: GhCredential, pr: PrHandle): Promise<void>;
 
   /**
    * Requires "pull_requests:write". Adds a comment (e.g. to surface
    * unresolved review objections that were waived rather than fixed).
    */
-  commentOnPr(cred: ScopedGhCredential, pr: PrHandle, body: string): Promise<void>;
+  commentOnPr(cred: GhCredential, pr: PrHandle, body: string): Promise<void>;
 
   /**
    * Requires "pull_requests:write". Looks up an existing PR for a branch, if
@@ -190,7 +201,7 @@ export interface GhClient {
    * call actually succeeded before the crash. Returns undefined if none
    * exists.
    */
-  findPrForBranch(cred: ScopedGhCredential, repo: string, branch: string): Promise<PrHandle | undefined>;
+  findPrForBranch(cred: GhCredential, repo: string, branch: string): Promise<PrHandle | undefined>;
 }
 
 /**
@@ -280,6 +291,190 @@ export class RealGhClient implements GhClient {
         ["pr", "list", "--repo", repo, "--head", branch, "--json", "url,number,headRefOid", "--state", "all"],
         process.cwd(),
         cred,
+      ));
+    } catch (err) {
+      throw new Error(`findPrForBranch: \`gh pr list\` failed: ${(err as Error).message}`);
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(stdout);
+    } catch (err) {
+      throw new Error(`findPrForBranch: could not parse \`gh pr list\` JSON output: ${(err as Error).message}`);
+    }
+    if (!Array.isArray(parsed) || parsed.length === 0) return undefined;
+
+    const first = parsed[0] as Record<string, unknown>;
+    return {
+      url: String(first.url),
+      number: Number(first.number),
+      headSha: String(first.headRefOid),
+    };
+  }
+}
+
+/**
+ * AMBIENT PATH (zero-token default) -- read this alongside the module doc
+ * comment above.
+ * ----------------------------------------------------------------------------
+ * `PROS_GH_PR_TOKEN` requires a human to provision a scoped fine-grained PAT
+ * before Gate 2 can open a draft PR at all. That is the STRONGER path (see
+ * above: GitHub's own server enforces the merge boundary, regardless of what
+ * this code does), and it remains the default whenever it is configured.
+ *
+ * When it is NOT configured, `runGate2Pipeline` falls back to this ambient
+ * path instead of requiring a token: `AmbientGhClient` shells out to the real
+ * `gh` CLI using the ORCHESTRATOR's own ambient `gh auth login` session --
+ * i.e. `process.env` completely unmodified, no `GH_TOKEN` override, nothing
+ * stripped. This is safe to do here, and only here, because:
+ *
+ *   - The orchestrator (`pipeline.ts`) is deterministic TypeScript, never a
+ *     model -- it is the process that legitimately owns the operator's
+ *     ambient `gh` session, the same way a human running `gh pr create`
+ *     themselves would.
+ *   - Every MODEL/agent subprocess this project spawns (`scoped-fixer`,
+ *     Codex, `claude ultrareview`, etc.) is stripped of `GH_TOKEN`/
+ *     `GITHUB_TOKEN` and pointed at an empty `GH_CONFIG_DIR` before it ever
+ *     starts, in `@pros/adapters`'s `spawnCli` -- so nothing a model
+ *     subprocess does (including shelling out to `gh` itself via its own
+ *     Bash tool) can ever reach this ambient session.
+ *
+ * RESIDUAL RISK vs the scoped-token path (be honest about this, don't paper
+ * over it): the scoped-token path is safe even against a FULLY COMPROMISED
+ * orchestrator, because GitHub's server -- not this code -- enforces the
+ * merge boundary. The ambient path is NOT: it trusts the orchestrator's own
+ * source. An agent capable of editing this repository's own source (e.g.
+ * ProsHarness working on ProsHarness) could in principle widen its own reach
+ * by editing `pipeline.ts`/`pr.ts` to call a merge method, and there is no
+ * GitHub-server-side backstop catching that the way there is for an
+ * under-scoped real token. The one cheap mitigation taken here: unlike
+ * `RealGhClient.mergePr`/`LocalGhStub.mergePr` (which reject an under-scoped
+ * credential via a scope check that a compromised orchestrator could in
+ * principle edit away), `AmbientGhClient.mergePr` below performs NO scope
+ * check at all and has NO code path that could ever invoke a real merge --
+ * it is a single unconditional `throw`, present specifically so the refusal
+ * is syntactically undeniable rather than a conditional an edit could flip.
+ * That is a smaller guarantee than GitHub's real server-side enforcement,
+ * and is deliberately documented as such rather than oversold.
+ */
+
+/**
+ * The ambient path's credential is a pure repo-carrier -- there is no real
+ * token or scope set to check (the orchestrator's ambient `gh auth` session
+ * is used as-is, exactly like a human typing `gh pr create` themselves), so
+ * `token`/`scopes` would be meaningless here. A distinct, minimal type keeps
+ * that honest rather than stuffing fake values into `ScopedGhCredential`.
+ */
+export interface AmbientGhCredential {
+  /** e.g. "owner/repo" */
+  repo: string;
+}
+
+/**
+ * Runs `gh auth status` to verify the orchestrator's ambient `gh` session is
+ * actually logged in, BEFORE attempting any real `gh pr create`/etc call --
+ * so a missing ambient session surfaces as one clear, actionable error
+ * message instead of a confusing failure partway through PR creation.
+ *
+ * The actual exec call is injectable (`opts.exec`) specifically so tests
+ * never need a real authenticated `gh` session on the machine running
+ * them -- mirroring this project's house style of injecting `ModelSession`/
+ * `GhClient` everywhere specifically so tests never depend on a real
+ * external tool or account.
+ */
+export async function checkGhAuthenticated(opts?: {
+  exec?: (command: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
+}): Promise<void> {
+  const exec = opts?.exec ?? ((command: string, args: string[]) => execFileAsync(command, args));
+  try {
+    await exec("gh", ["auth", "status"]);
+  } catch (err) {
+    throw new Error(
+      "gh is not authenticated -- run `gh auth login` first to use the zero-token ambient PR-creation path, " +
+        "or set PROS_GH_PR_TOKEN to use a scoped token instead. " +
+        `(underlying error: ${(err as Error).message})`,
+    );
+  }
+}
+
+/**
+ * Shells out to the real `gh` CLI using the orchestrator process's own
+ * ambient `process.env` completely unmodified -- deliberately NOT setting or
+ * stripping `GH_TOKEN`/`GH_CONFIG_DIR` the way `RealGhClient.execGh` does,
+ * because the whole point of this client is to use whatever `gh auth login`
+ * session the operator already has on this machine, exactly as if they ran
+ * `gh` themselves. See the module-level "AMBIENT PATH" doc comment above for
+ * the full safety reasoning and residual-risk tradeoff.
+ */
+export class AmbientGhClient implements GhClient {
+  private async execGh(args: string[], cwd: string) {
+    return execFileAsync("gh", args, { cwd, env: process.env, maxBuffer: 64 * 1024 * 1024 });
+  }
+
+  async createDraftPr(_cred: GhCredential, input: DraftPrInput): Promise<PrHandle> {
+    const { stdout } = await this.execGh(
+      [
+        "pr",
+        "create",
+        "--draft",
+        "--title",
+        input.title,
+        "--body",
+        input.body,
+        "--base",
+        input.baseBranch,
+        "--head",
+        input.branch,
+      ],
+      input.cwd,
+    );
+
+    const lines = stdout.trim().split("\n").filter((l) => l.length > 0);
+    const url = lines[lines.length - 1]?.trim();
+    if (!url) {
+      throw new Error(`Could not parse a PR URL out of \`gh pr create\` output: ${JSON.stringify(stdout)}`);
+    }
+    const match = url.match(/\/(\d+)\/?$/);
+    if (!match) {
+      throw new Error(`Could not parse a PR number out of \`gh pr create\` URL: ${url}`);
+    }
+    const number = Number(match[1]);
+
+    const { stdout: shaOut } = await execFileAsync("git", ["rev-parse", input.branch], { cwd: input.cwd });
+    const headSha = shaOut.trim();
+
+    return { url, number, headSha };
+  }
+
+  /**
+   * Unconditional, categorical refusal -- no scope check, no flag, nothing
+   * that could ever flip this to "allowed". This is the "cheap mitigation"
+   * described in the module-level ambient-path doc comment: merging is
+   * exclusively a human action via the GitHub UI or `gh` CLI run by the
+   * human themselves, never automated, and this method's refusal is not
+   * conditioned on anything a compromised orchestrator could edit around --
+   * it is simply a throw, always.
+   */
+  async mergePr(_cred: GhCredential, _pr: PrHandle): Promise<void> {
+    throw new Error(
+      "AmbientGhClient refuses to merge -- merging is exclusively a human action via the GitHub UI or gh CLI, never automated",
+    );
+  }
+
+  async commentOnPr(cred: GhCredential, pr: PrHandle, body: string): Promise<void> {
+    await this.execGh(["pr", "comment", String(pr.number), "--repo", cred.repo, "--body", body], process.cwd());
+  }
+
+  async findPrForBranch(
+    _cred: GhCredential,
+    repo: string,
+    branch: string,
+  ): Promise<PrHandle | undefined> {
+    let stdout: string;
+    try {
+      ({ stdout } = await this.execGh(
+        ["pr", "list", "--repo", repo, "--head", branch, "--json", "url,number,headRefOid", "--state", "all"],
+        process.cwd(),
       ));
     } catch (err) {
       throw new Error(`findPrForBranch: \`gh pr list\` failed: ${(err as Error).message}`);

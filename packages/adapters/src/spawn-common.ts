@@ -3,9 +3,15 @@
 // run each line through a provider-specific parser, optionally tee raw lines
 // to a log file for packages/index to tail, and expose an async-iterable
 // event stream plus an exitCode promise.
+//
+// This is also the ONE shared place that strips GitHub credentials before a
+// model/agent subprocess is spawned -- see `stripGhCredentials` below.
 
 import { spawn } from "node:child_process";
 import { appendFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type { ParsedEvent, Provider, SpawnOptions, SpawnResult } from "./types.js";
 
 export type LineParser = (raw: string, seq: number) => ParsedEvent;
@@ -41,11 +47,44 @@ async function* splitLines(chunks: AsyncIterable<Buffer>): AsyncIterable<string>
   }
 }
 
+/**
+ * Model/agent subprocesses (Sonnet's `scoped-fixer`, Codex, `claude
+ * ultrareview` -- everything routed through `spawnClaude`/`spawnCodex`, which
+ * both call this function) must NEVER be able to act as a GitHub-authenticated
+ * `gh` caller. That boundary is enforced here, in the ONE place both adapters
+ * share, rather than in each adapter separately, so it cannot be forgotten by
+ * a future third provider:
+ *
+ *   - `GH_TOKEN`/`GITHUB_TOKEN` are unconditionally deleted from the child's
+ *     env, even if the orchestrator's OWN process (or the caller's `opts.env`)
+ *     happens to have one set -- e.g. an operator's ambient shell exporting
+ *     `GH_TOKEN` for unrelated reasons must not leak into a model subprocess.
+ *   - `GH_CONFIG_DIR` is repointed at a fresh, never-created scratch path, so
+ *     that if the model's own Bash tool shells out to `gh` directly, `gh`
+ *     finds no ambient `gh auth login` session there either (a missing/empty
+ *     config dir reads to `gh` as "not logged in"). We deliberately do NOT
+ *     create this directory -- there is nothing for `gh` to find in it either
+ *     way, and not creating it is one fewer filesystem side effect per spawn.
+ *
+ * This is unconditional and applies to every session type (finding, debate,
+ * critique, implement, verify, review) -- no model subprocess is ever the
+ * right place for real `gh` credentials; only the deterministic orchestrator
+ * itself (`packages/implement/src/pipeline.ts`) is.
+ */
+function stripGhCredentials(env: NodeJS.ProcessEnv): void {
+  delete env.GH_TOKEN;
+  delete env.GITHUB_TOKEN;
+  env.GH_CONFIG_DIR = path.join(tmpdir(), `pros-no-gh-config-${randomUUID()}`);
+}
+
 export function spawnCli({ command, args, provider, opts, parseLine }: SpawnCliArgs): SpawnResult {
+  const env = { ...process.env, ...opts.env };
+  stripGhCredentials(env);
+
   const child = spawn(command, args, {
     cwd: opts.cwd,
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, ...opts.env },
+    env,
   });
 
   // Write the prompt to stdin and close it (both CLIs accept a piped prompt
