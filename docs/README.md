@@ -15,6 +15,7 @@ Read in this order:
 | [`06-m3-implementation-log.md`](06-m3-implementation-log.md) | M3: Gate 1 -- `submit_plan`, the `ExitPlanMode` hook, the dashboard, ntfy push. |
 | [`07-m4-implementation-log.md`](07-m4-implementation-log.md) | M4 complete: Gate 2 -- Sonnet `scoped-fixer` implementation, background-session verification (verdict only), Codex+`claude ultrareview` adversarial review (a skill), draft PR via `gh` with a real merge-blocking credential boundary, concurrency lease + token ceilings, `pros reconcile`. |
 | [`08-m5-implementation-log.md`](08-m5-implementation-log.md) | M5 complete: the session graph (`@pros/graph`, zero-LLM, every node traces to a real `raw_events` row), the dashboard's review page (`@pros/review` -- deterministic risk-ranked hunks, focus checklist) with a build-time AST symbol gate for code diagrams, and durable `verify_verdict`/`review_completed` journaling. |
+| [`09-m6-implementation-log.md`](09-m6-implementation-log.md) | M6 complete: the learning loop -- `@pros/miner` (deterministic correction mining + session cards + pr-link/plan-artifact-gated intent clustering + loop proposals), `@pros/review`'s "new to you" vocabulary check, and the dashboard's read-only `/loops` page. Verified against the real, extracted `history.jsonl`: 309 corrections found, the mothership triage cluster rediscovered (90 sessions, 54 gated). |
 
 ## The three facts the whole design rests on
 
