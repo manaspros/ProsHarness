@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"01a003cc-efce-76d2-ab9d-5bbcf33df136"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll run it now."}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/bash -lc pwd","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/bin/bash -lc pwd","aggregated_output":"/home/manas/Code/ProsHarness/packages/adapters/test/fixtures/codex\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"/home/manas/Code/ProsHarness/packages/adapters/test/fixtures/codex"}}
+{"type":"turn.completed","usage":{"input_tokens":28114,"cached_input_tokens":24064,"cache_write_input_tokens":0,"output_tokens":110,"reasoning_output_tokens":12}}
