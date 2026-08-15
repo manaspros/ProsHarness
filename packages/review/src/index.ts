@@ -17,3 +17,6 @@ export type { ChecklistItem } from "./checklist.js";
 
 export { extractDeclaredSymbols, validateDiagramSpec } from "./ast-validate.js";
 export type { DiagramSpec, ValidationResult } from "./ast-validate.js";
+
+export { normalizeVocabulary, checkNewToYou, extractCandidatesFromHunks, KNOWN_COMMAND_TOKENS } from "./new-to-you.js";
+export type { HistoryVocabulary, NewToYouCandidate, NewToYouResult } from "./new-to-you.js";
