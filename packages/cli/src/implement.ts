@@ -50,7 +50,11 @@ export function parseImplementArgs(argv: string[], env: NodeJS.ProcessEnv = proc
  * every "not ready"/"already done" condition rather than silently
  * proceeding or silently no-oping.
  */
-export async function runImplementCommand(argv: string[], env: NodeJS.ProcessEnv = process.env): Promise<string> {
+export async function runImplementCommand(
+  argv: string[],
+  env: NodeJS.ProcessEnv = process.env,
+  opts: { notificationsEnabled?: boolean } = {},
+): Promise<string> {
   const args = parseImplementArgs(argv, env);
   const runDir = path.join(args.runsRoot, args.runId);
 
@@ -84,7 +88,11 @@ export async function runImplementCommand(argv: string[], env: NodeJS.ProcessEnv
     ntfyUrl: args.ntfyUrl,
   });
 
-  const result = await runGate2Pipeline({ ...derived, reapWorktreeOnSuccess: true });
+  const result = await runGate2Pipeline({
+    ...derived,
+    reapWorktreeOnSuccess: true,
+    notificationsEnabled: opts.notificationsEnabled ?? false,
+  });
 
   if (result.pr) {
     return `pros implement ${args.runId}: draft PR opened at ${result.pr.url} (verify=${result.verdict.outcome}, review=${result.review.verdict})`;

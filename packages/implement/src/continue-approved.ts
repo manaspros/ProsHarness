@@ -13,6 +13,8 @@ export interface ContinueApprovedGate2Options {
   maxConcurrent?: number;
   maxTokensPerRun: number;
   ntfyUrl?: string;
+  /** Explicit entry-point policy for the fresh Gate 2 run. */
+  notificationsEnabled?: boolean;
   /** Test seam and explicit policy overrides for the fresh Gate 2 context. */
   gate2OptionsOverride?: Partial<Gate2PipelineOptions>;
 }
@@ -65,6 +67,7 @@ export async function runApprovedGate2(opts: ContinueApprovedGate2Options): Prom
   return runGate2Pipeline({
     ...derived,
     reapWorktreeOnSuccess: true,
+    notificationsEnabled: opts.notificationsEnabled ?? false,
     ...opts.gate2OptionsOverride,
   });
 }

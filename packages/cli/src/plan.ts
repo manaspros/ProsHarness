@@ -48,6 +48,9 @@ export async function runPlanCommand(argv: string[], envOverrides: Partial<PlanP
     description: args.description,
     runId: args.runId,
     ...envOverrides,
+    // The exported helper is also used directly by tests/library callers.
+    // The real CLI entry point opts in explicitly in main.ts.
+    notificationsEnabled: envOverrides.notificationsEnabled ?? false,
   });
 
   return [

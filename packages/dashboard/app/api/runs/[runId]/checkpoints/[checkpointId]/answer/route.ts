@@ -121,6 +121,9 @@ export async function POST(
                 maxConcurrent: getMaxConcurrent(),
                 maxTokensPerRun: getMaxTokensPerRun(),
                 ntfyUrl: process.env.PROS_NTFY_URL,
+                // Keep dashboard approval scoped to this run and silent.
+                // Notifications are never an implicit side effect of a UI click.
+                notificationsEnabled: false,
               });
               await recordPlanOperation({ runId, operation: "implementation", transition: "success" });
             } catch (err) {

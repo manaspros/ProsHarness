@@ -113,6 +113,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     description,
     runId,
     dangerouslySkipPermissions,
+    // Dashboard runs are intentionally local/silent. The dashboard action
+    // must not fan out a Slack/Claude notification as a side effect.
+    notificationsEnabled: false,
   }).then(() => recordOperation(runsRoot, runId, "plan_pipeline", "success")).catch((err) => {
     console.error(`[api/new/launch] runPlanPipeline failed for runId=${runId}:`, err);
     return recordOperation(runsRoot, runId, "plan_pipeline", "failed", err instanceof Error ? err.message : String(err));

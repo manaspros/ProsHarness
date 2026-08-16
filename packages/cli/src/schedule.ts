@@ -121,6 +121,7 @@ export function buildScheduledJobs(env: NodeJS.ProcessEnv = process.env) {
     runsRoot: dirs.runsRoot,
     maxTokensPerRun,
     ntfyUrl: env.PROS_NTFY_URL,
+    notificationsEnabled: false,
   });
 
   const skillrankJob = makeSkillrankWeeklyJob({
@@ -139,6 +140,7 @@ export function buildScheduledJobs(env: NodeJS.ProcessEnv = process.env) {
     maxConcurrent,
     maxTokensPerRun,
     ntfyUrl: env.PROS_NTFY_URL,
+    notificationsEnabled: false,
     intervalMs: env.PROS_GATE1_CONTINUATION_INTERVAL_MS ? Number(env.PROS_GATE1_CONTINUATION_INTERVAL_MS) : undefined,
   });
 

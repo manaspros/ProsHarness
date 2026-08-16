@@ -56,6 +56,8 @@ export interface TriggerSweepJobOptions {
   runsRoot: string;
   maxTokensPerRun: number;
   ntfyUrl?: string;
+  /** Explicitly enable external notifications for this scheduled job. */
+  notificationsEnabled?: boolean;
   intervalMs?: number;
 }
 
@@ -75,6 +77,7 @@ export function makeTriggerSweepJob(opts: TriggerSweepJobOptions): ScheduledJob 
           runsRoot: opts.runsRoot,
           maxTokensPerRun: opts.maxTokensPerRun,
           ntfyUrl: opts.ntfyUrl,
+          notificationsEnabled: opts.notificationsEnabled ?? false,
         }),
       });
 
@@ -126,6 +129,8 @@ export interface Gate1ContinuationJobOptions {
   maxConcurrent: number;
   maxTokensPerRun: number;
   ntfyUrl?: string;
+  /** Explicitly enable external notifications for continued runs. */
+  notificationsEnabled?: boolean;
   intervalMs?: number;
   /**
    * Test-only seam: fields merged onto every candidate's derived
@@ -222,7 +227,12 @@ export function makeGate1ContinuationJob(opts: Gate1ContinuationJobOptions): Sch
             tokenCeiling: new TokenCeiling({ maxTotalTokens: opts.maxTokensPerRun }),
             ntfyUrl: opts.ntfyUrl,
           });
-          await runGate2Pipeline({ ...derived, reapWorktreeOnSuccess: true, ...opts.gate2OptionsOverride });
+          await runGate2Pipeline({
+            ...derived,
+            reapWorktreeOnSuccess: true,
+            notificationsEnabled: opts.notificationsEnabled ?? false,
+            ...opts.gate2OptionsOverride,
+          });
           continued++;
         } catch (err) {
           // Per-candidate catch -- see file doc comment. A busy

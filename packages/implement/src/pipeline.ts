@@ -4,8 +4,8 @@
  * reconcile` calls.
  *
  * Mirrors the shape of packages/plan/src/pipeline.ts's `runPlanPipeline`
- * closely: same Barrier.open/wireNtfyNotifications/close discipline, same
- * idempotent-park pattern, just calling `barrier.parkForGate2` instead of
+ * closely: same Barrier.open/conditional wireNtfyNotifications/close
+ * discipline, same idempotent-park pattern, just calling `barrier.parkForGate2` instead of
  * `parkForGate1`.
  *
  * ---- Design choices worth being explicit about ----
@@ -130,6 +130,12 @@ export interface Gate2PipelineOptions {
    * process.env.PROS_SLACK_NOTIFY_TARGET, mirroring ntfyUrl's own fallback.
    */
   slackTarget?: string;
+  /**
+   * External notifications are opt-in at the orchestration entry point.
+   * Reusable/library calls and tests remain silent unless a real caller
+   * explicitly enables them.
+   */
+  notificationsEnabled?: boolean;
   /**
    * If true, remove the local worktree directory (`git worktree remove
    * --force` + `git worktree prune`) once Gate 2 successfully parks --
@@ -403,7 +409,9 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
     let checkpointId: string;
     let questionId: string;
     try {
-      const unsubscribe = wireNtfyNotifications(barrier, { url: opts.ntfyUrl, slackTarget: opts.slackTarget });
+      const unsubscribe = opts.notificationsEnabled
+        ? wireNtfyNotifications(barrier, { url: opts.ntfyUrl, slackTarget: opts.slackTarget })
+        : () => undefined;
       try {
         const freshQuestionId = randomUUID();
         const gate2IdempotencyKey = `gate2-${opts.runId}`;
