@@ -11,6 +11,7 @@ import { StatusPill } from "../../../../components/StatusPill";
 import { Alert } from "../../../../components/Alert";
 import { Button } from "../../../../components/ui/button";
 import { Input } from "../../../../components/ui/input";
+import { Gate2AnswerForm } from "../../../../components/Gate2AnswerForm";
 
 export const dynamic = "force-dynamic";
 
@@ -46,7 +47,9 @@ export default async function QuestionsPage({
     );
   }
 
-  const questions = [...state.checkpoints.values()].filter((cp) => (cp.gateType ?? "ask_human") === "ask_human");
+  const questions = [...state.checkpoints.values()].filter(
+    (cp) => (cp.gateType ?? "ask_human") === "ask_human" || cp.gateType === "pr_review",
+  );
 
   return (
     <div className="space-y-6">
@@ -68,6 +71,11 @@ export default async function QuestionsPage({
           {questions.map((cp) => (
             <Surface key={cp.checkpointId} elevation="raised" className="space-y-3 p-5">
               <p className="text-sm font-medium text-foreground">{cp.prompt}</p>
+              {cp.gateType === "pr_review" && cp.prRef && (
+                <a href={cp.prRef.url} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">
+                  Open draft PR #{cp.prRef.number} →
+                </a>
+              )}
 
               <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                 {cp.phase === "parked" && <StatusPill status="parked" />}
@@ -81,6 +89,12 @@ export default async function QuestionsPage({
                   <span className="font-semibold text-foreground">Answer:</span> {cp.answer}{" "}
                   <em className="text-muted-foreground">[{cp.effect}]</em>
                 </p>
+              ) : cp.gateType === "pr_review" && cp.phase === "parked" ? (
+                <Gate2AnswerForm
+                  runId={runId}
+                  checkpointId={cp.checkpointId}
+                  redirectTo={`/runs/${encodeURIComponent(runId)}/questions`}
+                />
               ) : cp.phase === "parked" ? (
                 <form
                   action={`/api/runs/${encodeURIComponent(runId)}/checkpoints/${encodeURIComponent(cp.checkpointId)}/answer`}

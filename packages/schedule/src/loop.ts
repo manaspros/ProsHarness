@@ -41,17 +41,19 @@ export function startSchedulerLoop(opts: SchedulerLoopOptions): { stop: () => vo
     ticking = true;
     try {
       const now = Date.now();
+      const statuses: JobStatus[] = [];
       for (const job of opts.jobs) {
         const status = await readJobStatus(opts.statusDir, job.name);
         if (isDue(status, job.intervalMs, now)) {
-          await runJobOnce(job, opts.statusDir);
+          // Keep the returned in-memory status for this tick. In particular,
+          // a status-store failure cannot be observed by reading the same
+          // unavailable/corrupt path back immediately afterward.
+          statuses.push(await runJobOnce(job, opts.statusDir));
+        } else {
+          statuses.push(status);
         }
       }
       if (opts.onTick) {
-        const statuses: JobStatus[] = [];
-        for (const job of opts.jobs) {
-          statuses.push(await readJobStatus(opts.statusDir, job.name));
-        }
         opts.onTick(statuses);
       }
     } finally {

@@ -7,7 +7,9 @@ import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Barrier, Journal } from "@pros/barrier";
+import type { Gate2PipelineResult } from "@pros/implement";
 import { parseImplementArgs, runImplementCommand } from "../src/implement.js";
+import { recordGate2Operation } from "../src/gate2-operation.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -22,6 +24,26 @@ async function makeTempRepo(): Promise<string> {
 
 test("parseImplementArgs: requires a run-id positional arg", () => {
   assert.throws(() => parseImplementArgs([]), /usage: pros implement <run-id>/);
+});
+
+test("CLI Gate 2 operation events preserve the resolved pipeline result", async () => {
+  const runsRoot = await mkdtemp(path.join(tmpdir(), "pros-cli-gate2-events-"));
+  const runId = "cli-gate2-events";
+  const runDir = path.join(runsRoot, runId);
+  try {
+    const result = { aborted: { stage: "review", reason: "blockers found" } } as unknown as Gate2PipelineResult;
+    await recordGate2Operation({ runId, runDir, requestedBy: "cli", transition: "started" });
+    await recordGate2Operation({ runId, runDir, requestedBy: "cli", transition: "completed", result });
+
+    const { entries } = await Journal.read(runDir);
+    assert.deepEqual(entries.map((entry) => entry.kind), ["plan_operation_started", "plan_operation_completed"]);
+    const completion = entries[1] as unknown as { outcome: string; error: string; result: Gate2PipelineResult };
+    assert.equal(completion.outcome, "failed");
+    assert.match(completion.error, /Gate 2 stopped during review/);
+    assert.deepEqual(completion.result, result);
+  } finally {
+    await rm(runsRoot, { recursive: true, force: true }).catch(() => undefined);
+  }
 });
 
 test("parseImplementArgs: resolves config from env vars with the <HOME>/.pros/<name> fallback convention", () => {

@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, readdirSync } from "node:fs";
 import { mkdtemp, mkdir, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -103,6 +104,94 @@ test("rebuild: basic - findings, plans, objections, and raw_events are indexed w
     } finally {
       db.close();
     }
+  } finally {
+    await cleanup(runsRoot);
+    await cleanup(dbDir);
+  }
+});
+
+test("rebuild: concurrent rebuilds publish complete databases without interrupting an existing reader", async () => {
+  const runsRoot = await makeTempDir("pros-idx-runs-atomic-");
+  const dbDir = await makeTempDir("pros-idx-db-atomic-");
+  try {
+    const runId = "atomic-run";
+    const runDir = path.join(runsRoot, runId);
+    const journal = await Journal.open(runDir);
+    await journal.append({ runId, fenceEpoch: 0, kind: "finding_recorded", findingId: "f1", title: "stable", evidenceJson: "{}" });
+    await journal.close();
+
+    const dbPath = path.join(dbDir, "index.sqlite");
+    await rebuildIndex(dbPath, runsRoot);
+
+    // rebuildIndex yields while acquiring its cross-process lock. The live
+    // path must remain openable during the build; the old implementation
+    // unlinked it synchronously before it had a replacement ready.
+    const rebuilding = rebuildIndex(dbPath, runsRoot);
+    const readerDuringRebuild = new Database(dbPath, { readonly: true });
+    try {
+      const oldRows = readerDuringRebuild.prepare("SELECT COUNT(*) AS n FROM findings WHERE run_id = ?").get(runId) as { n: number };
+      assert.equal(oldRows.n, 1, "an in-flight rebuild must not remove the last complete database");
+
+      const concurrent = [rebuilding, rebuildIndex(dbPath, runsRoot), rebuildIndex(dbPath, runsRoot)];
+      const reports = await Promise.all(concurrent);
+      assert.deepEqual(reports.map((report) => report.runsProcessed), [1, 1, 1]);
+
+      // A reader that was opened before replacement remains valid against its
+      // old complete inode, while new readers see the newly published one.
+      const oldRowsAfter = readerDuringRebuild.prepare("SELECT COUNT(*) AS n FROM findings WHERE run_id = ?").get(runId) as { n: number };
+      assert.equal(oldRowsAfter.n, 1);
+    } finally {
+      readerDuringRebuild.close();
+    }
+
+    const finalDb = new Database(dbPath, { readonly: true });
+    try {
+      assert.equal(finalDb.prepare("PRAGMA integrity_check").get()?.integrity_check, "ok");
+      const finalRows = finalDb.prepare("SELECT COUNT(*) AS n FROM findings WHERE run_id = ?").get(runId) as { n: number };
+      assert.equal(finalRows.n, 1);
+    } finally {
+      finalDb.close();
+    }
+
+    const leftovers = readdirSync(dbDir).filter((name) => name.includes(".tmp-") || name.endsWith(".sqlite.lock"));
+    assert.deepEqual(leftovers, [], "rebuild locks and temporary databases must be cleaned up");
+  } finally {
+    await cleanup(runsRoot);
+    await cleanup(dbDir);
+  }
+});
+
+test("rebuild: a failed temporary build preserves the last published index and cleans its lock/temp files", async () => {
+  const runsRoot = await makeTempDir("pros-idx-runs-failure-");
+  const dbDir = await makeTempDir("pros-idx-db-failure-");
+  const invalidRunsRoot = path.join(runsRoot, "not-a-directory");
+  try {
+    const runId = "preserved-run";
+    const runDir = path.join(runsRoot, runId);
+    const journal = await Journal.open(runDir);
+    await journal.append({ runId, fenceEpoch: 0, kind: "finding_recorded", findingId: "f1", title: "preserve me", evidenceJson: "{}" });
+    await journal.close();
+
+    const dbPath = path.join(dbDir, "index.sqlite");
+    await rebuildIndex(dbPath, runsRoot);
+    await writeFile(invalidRunsRoot, "this is a file, not a runs directory", "utf8");
+
+    await assert.rejects(() => rebuildIndex(dbPath, invalidRunsRoot), /ENOTDIR|not a directory/i);
+
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      const row = db.prepare("SELECT title FROM findings WHERE run_id = ?").get(runId) as { title: string } | undefined;
+      assert.equal(row?.title, "preserve me", "a failed rebuild must not publish a partial replacement");
+      assert.equal(db.prepare("PRAGMA integrity_check").get()?.integrity_check, "ok");
+    } finally {
+      db.close();
+    }
+
+    const leftovers = readdirSync(dbDir).filter((name) => name.includes(".tmp-") || name.endsWith(".sqlite.lock"));
+    assert.deepEqual(leftovers, [], "failed rebuilds must clean their temporary database and lock");
+    assert.equal(existsSync(dbPath + "-journal"), false);
+    assert.equal(existsSync(dbPath + "-wal"), false);
+    assert.equal(existsSync(dbPath + "-shm"), false);
   } finally {
     await cleanup(runsRoot);
     await cleanup(dbDir);

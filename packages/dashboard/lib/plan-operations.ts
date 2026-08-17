@@ -1,6 +1,7 @@
 import path from "node:path";
 import { Journal, loadRunState, type PlanOperation } from "@pros/barrier";
 import { getRunsRoot } from "./config";
+import type { Gate2PipelineResultLike } from "./gate2";
 
 export async function recordPlanOperation(opts: {
   runsRoot?: string;
@@ -10,6 +11,7 @@ export async function recordPlanOperation(opts: {
   requestedBy?: string;
   dangerouslySkipPermissions?: boolean;
   error?: string;
+  result?: Gate2PipelineResultLike;
 }): Promise<void> {
   const runsRoot = opts.runsRoot ?? getRunsRoot();
   const runDir = path.join(runsRoot, opts.runId);
@@ -33,7 +35,8 @@ export async function recordPlanOperation(opts: {
         operation: opts.operation,
         outcome: opts.transition,
         error: opts.error,
-      });
+        result: opts.result,
+      } as any);
     }
   } finally {
     await journal.close();

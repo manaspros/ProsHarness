@@ -120,37 +120,107 @@ export function spawnCli({ command, args, provider, opts, parseLine }: SpawnCliA
   const exitCode = new Promise<number | null>((resolve) => {
     exitCodeResolve = resolve;
   });
+  let closed = false;
+  let timedOut = false;
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  let forceKillHandle: ReturnType<typeof setTimeout> | undefined;
+  let rejectTimeout!: (error: Error) => void;
+  const timeoutSignal =
+    opts.timeoutMs === undefined
+      ? undefined
+      : new Promise<never>((_resolve, reject) => {
+          rejectTimeout = reject;
+        });
+  // The timeout signal is also created when a caller only uses the lifecycle
+  // promises and never consumes `events`. Mark its rejection handled here so
+  // a timed-out, abandoned stream cannot become an unhandled rejection.
+  timeoutSignal?.catch(() => undefined);
+  const clearKillTimers = () => {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+    if (forceKillHandle) clearTimeout(forceKillHandle);
+    timeoutHandle = undefined;
+    forceKillHandle = undefined;
+  };
+  const terminate = (signal: NodeJS.Signals, closeStreams: boolean): void => {
+    try {
+      child.kill(signal);
+    } catch {
+      // The child may already have exited between the state check and kill.
+    }
+    if (closeStreams) {
+      child.stdout.destroy();
+      child.stderr?.destroy();
+    }
+  };
+  const scheduleForceKill = (): void => {
+    if (forceKillHandle) clearTimeout(forceKillHandle);
+    forceKillHandle = setTimeout(() => {
+      if (!closed) terminate("SIGKILL", true);
+    }, 1_000);
+  };
   child.on("close", (code) => {
+    closed = true;
+    clearKillTimers();
     exitCodeResolve(code);
     finishStderr();
   });
   child.on("error", () => {
+    closed = true;
+    clearKillTimers();
     exitCodeResolve(null);
     finishStderr();
   });
+
+  if (opts.timeoutMs !== undefined) {
+    timeoutHandle = setTimeout(() => {
+      if (closed) return;
+      timedOut = true;
+      const timeoutError = new Error(`spawnCli: CLI attempt ${attemptId} timed out after ${opts.timeoutMs}ms`);
+      rejectTimeout(timeoutError);
+      terminate("SIGTERM", true);
+      // A CLI that ignores SIGTERM must not leave an acceptance/test process
+      // alive forever. The normal path is still graceful SIGTERM first.
+      scheduleForceKill();
+    }, Math.max(0, opts.timeoutMs));
+  }
 
   const rawLogPath = opts.rawLogPath;
   const attemptId = opts.attemptId;
 
   async function* events(): AsyncIterable<ParsedEvent> {
     let seq = 0;
-    for await (const line of splitLines(child.stdout)) {
-      if (line.length === 0) continue; // skip blank keepalive lines, not real events
-      if (rawLogPath) {
-        // At-least-once append; failures here must never break parsing.
-        try {
-          // The attempt directory already carries attemptId and the line
-          // order is the raw file's seq. Keep the file itself as verbatim
-          // provider NDJSON so it can be tailed and parsed by the dashboard.
-          await appendFile(rawLogPath, `${line}\n`, "utf8");
-        } catch {
-          // Swallow: the raw log is a best-effort side channel for the index
-          // package, not required for correct event delivery.
+    const source = splitLines(child.stdout)[Symbol.asyncIterator]();
+    try {
+      for (;;) {
+        const next = timeoutSignal ? await Promise.race([source.next(), timeoutSignal]) : await source.next();
+        if (next.done) break;
+        const line = next.value;
+        if (line.length === 0) continue; // skip blank keepalive lines, not real events
+        if (rawLogPath) {
+          try {
+            // The attempt directory already carries attemptId and the line
+            // order is the raw file's seq. Keep the file itself as verbatim
+            // provider NDJSON so it can be tailed and parsed by the dashboard.
+            await appendFile(rawLogPath, `${line}\n`, "utf8");
+          } catch (error) {
+            // A missing/unwritable raw log means the attempt cannot satisfy
+            // its audit contract. Stop the child and fail the stream instead
+            // of continuing with a deceptively successful model result.
+            terminate("SIGTERM", true);
+            scheduleForceKill();
+            const reason = error instanceof Error ? error.message : String(error);
+            throw new Error(`spawnCli: failed to write raw log ${rawLogPath} for attempt ${attemptId}: ${reason}`);
+          }
         }
+        const parsed = parseLine(line, seq);
+        seq += 1;
+        yield parsed;
       }
-      const parsed = parseLine(line, seq);
-      seq += 1;
-      yield parsed;
+    } finally {
+      await source.return?.();
+    }
+    if (timedOut) {
+      throw new Error(`spawnCli: CLI attempt ${attemptId} timed out after ${opts.timeoutMs}ms`);
     }
   }
 

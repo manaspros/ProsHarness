@@ -17,9 +17,10 @@
  * busy concurrency lease, a transient `gh`/git error, a genuinely broken
  * run) must not prevent the other candidates in the same tick from being
  * tried -- so failures are caught PER CANDIDATE and counted in the returned
- * summary, while the job's `run()` itself still only throws for something
- * that makes the whole scan meaningless (e.g. `runsRoot` scanning failing
- * for a reason other than ENOENT).
+ * summary, while the job's `run()` itself still throws after the scan when
+ * one or more candidates failed. That final rejection is important: a
+ * resolved summary with `failures > 0` would otherwise be recorded as an
+ * overall scheduler success by `runJobOnce`.
  */
 
 import { readdir } from "node:fs/promises";
@@ -30,7 +31,9 @@ import { deriveGate2OptionsFromRun, isGate2AlreadyStarted, runGate2Pipeline } fr
 import { runTriggerCycle, createRealOnNewSignal } from "@pros/triggers";
 import type { TriggerSource } from "@pros/triggers";
 import { runSkillrank, writeSkillrankOutput } from "@pros/skillrank";
+import { ScheduledJobError } from "./types.js";
 import type { JobRunSummary, ScheduledJob } from "./types.js";
+import { recordGate2Operation } from "./gate2-operation.js";
 
 const DEFAULT_TRIGGER_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const DEFAULT_SKILLRANK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -174,6 +177,7 @@ export function makeGate1ContinuationJob(opts: Gate1ContinuationJobOptions): Sch
       let skippedAlreadyStarted = 0;
       let failures = 0;
       const failureRunIds: string[] = [];
+      const failureMessages: string[] = [];
 
       let runIds: string[];
       try {
@@ -213,6 +217,7 @@ export function makeGate1ContinuationJob(opts: Gate1ContinuationJobOptions): Sch
         }
 
         try {
+          await recordGate2Operation({ runId, runDir, requestedBy: "scheduler", transition: "started" });
           const derived = await deriveGate2OptionsFromRun({
             runsRoot: opts.runsRoot,
             runId,
@@ -222,9 +227,10 @@ export function makeGate1ContinuationJob(opts: Gate1ContinuationJobOptions): Sch
             tokenCeiling: new TokenCeiling({ maxTotalTokens: opts.maxTokensPerRun }),
             ntfyUrl: opts.ntfyUrl,
           });
-          await runGate2Pipeline({ ...derived, reapWorktreeOnSuccess: true, ...opts.gate2OptionsOverride });
+          const result = await runGate2Pipeline({ ...derived, reapWorktreeOnSuccess: true, ...opts.gate2OptionsOverride });
+          await recordGate2Operation({ runId, runDir, requestedBy: "scheduler", transition: "completed", result });
           continued++;
-        } catch (err) {
+        } catch (err: unknown) {
           // Per-candidate catch -- see file doc comment. A busy
           // ConcurrencyLease throws immediately rather than waiting
           // (@pros/lease's documented admission-control semantics), so a
@@ -232,10 +238,17 @@ export function makeGate1ContinuationJob(opts: Gate1ContinuationJobOptions): Sch
           // failure, not a crashed job.
           failures++;
           failureRunIds.push(runId);
+          const message = err instanceof Error ? err.message : String(err);
+          failureMessages.push(`${runId}: ${message}`);
+          await recordGate2Operation({ runId, runDir, requestedBy: "scheduler", transition: "failed", error: message }).catch(() => undefined);
         }
       }
 
-      return { continued, skippedStale, skippedAlreadyStarted, failures, failureRunIds };
+      const summary = { continued, skippedStale, skippedAlreadyStarted, failures, failureRunIds };
+      if (failures > 0) {
+        throw new ScheduledJobError(`gate1 continuation failed for run(s): ${failureMessages.join("; ")}`, summary);
+      }
+      return summary;
     },
   };
 }

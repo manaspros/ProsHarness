@@ -14,6 +14,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { createHash } from "node:crypto";
 import { DEFAULT_SESSION_DIRECTIVE, type ModelSession, type ModelUsage } from "@pros/plan";
 import { loadAgentBriefByName } from "@pros/agents";
 import type { TokenCeiling } from "@pros/lease";
@@ -34,7 +35,7 @@ export interface ImplementInput {
   branch: string;
   /** The approved Gate-1 plan text. */
   planMarkdown: string;
-  /** Globs/paths; folded into the prompt. The scoped-fixer brief enforces this itself -- we trust but also verify post-hoc (see AllocationAllowlistViolation below). */
+  /** Non-empty repository-relative paths/globs; folded into the prompt and verified post-hoc. */
   fileAllowlist: string[];
   runId: string;
   attemptId: string;
@@ -55,7 +56,7 @@ export interface ImplementResult {
   /** The model's final text response, truncated -- NOT the full raw event stream. */
   summary: string;
   usage: ModelUsage;
-  /** From `git diff --name-only <baseSha> HEAD` in worktreePath. */
+  /** Committed files plus any newly changed working-tree files observed after the model run. */
   filesChanged: string[];
 }
 
@@ -74,6 +75,116 @@ export class AllowlistViolationError extends Error {
         `(allowlist: ${allowlist.join(", ") || "<empty>"})`,
     );
     this.name = "AllowlistViolationError";
+  }
+}
+
+/** Thrown when the model leaves a new staged, unstaged, or untracked change behind. */
+export class UnexpectedWorkingTreeChangeError extends Error {
+  constructor(
+    public readonly offendingFiles: string[],
+    phase: "before" | "after" = "after",
+  ) {
+    super(
+      phase === "before"
+        ? `runImplementation: worktree was already dirty before the model run: ${offendingFiles.join(", ")}`
+        : `runImplementation: model left unexpected working-tree change(s) before verification: ${offendingFiles.join(", ")}`,
+    );
+    this.name = "UnexpectedWorkingTreeChangeError";
+  }
+}
+
+/** Thrown when a caller tries to run a scoped implementation without a usable scope. */
+export class InvalidFileAllowlistError extends Error {
+  constructor(public readonly allowlist: unknown, reason: string) {
+    super(`runImplementation: invalid file allowlist (${reason}); refusing to run implementation`);
+    this.name = "InvalidFileAllowlistError";
+  }
+}
+
+interface GitSnapshot {
+  headSha: string;
+  /** A content-sensitive representation of all tracked staged + unstaged changes. */
+  trackedDiffHash: string;
+  /** Porcelain status entries, including staged, unstaged, deleted, and untracked files. */
+  status: Map<string, string>;
+  /** Content-sensitive representation of standard (non-ignored) untracked files. */
+  untrackedFiles: Map<string, string>;
+}
+
+function splitNulList(value: string): string[] {
+  return value.split("\0").filter((entry) => entry.length > 0);
+}
+
+async function gitSnapshot(cwd: string): Promise<GitSnapshot> {
+  const headSha = (await git(cwd, ["rev-parse", "HEAD"])).trim();
+  const trackedDiff = await git(cwd, ["diff", "--binary", "--no-renames", "HEAD", "--"]);
+  const status = new Map<string, string>();
+  for (const entry of splitNulList(await git(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"]))) {
+    // Porcelain v1 records are "XY path" followed by NUL. Keeping XY as
+    // part of the snapshot catches a file changing from staged to unstaged
+    // even when the path itself stays the same.
+    if (entry.length < 4) continue;
+    status.set(entry.slice(3), entry.slice(0, 2));
+  }
+  const untrackedPaths = splitNulList(await git(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]));
+  const untrackedFiles = new Map<string, string>();
+  for (const file of untrackedPaths) {
+    const hash = (await git(cwd, ["hash-object", "--no-filters", "--", file])).trim();
+    untrackedFiles.set(file, hash);
+  }
+
+  return {
+    headSha,
+    trackedDiffHash: createHash("sha256").update(trackedDiff).digest("hex"),
+    status,
+    untrackedFiles,
+  };
+}
+
+function snapshotDeltaFiles(before: GitSnapshot, after: GitSnapshot): string[] {
+  const changed = new Set<string>();
+
+  if (before.trackedDiffHash !== after.trackedDiffHash || before.status.size !== after.status.size) {
+    for (const file of before.status.keys()) changed.add(file);
+    for (const file of after.status.keys()) changed.add(file);
+  } else {
+    const statusPaths = new Set([...before.status.keys(), ...after.status.keys()]);
+    for (const file of statusPaths) {
+      if (before.status.get(file) !== after.status.get(file)) changed.add(file);
+    }
+  }
+
+  const untrackedPaths = new Set([...before.untrackedFiles.keys(), ...after.untrackedFiles.keys()]);
+  for (const file of untrackedPaths) {
+    if (before.untrackedFiles.get(file) !== after.untrackedFiles.get(file)) changed.add(file);
+  }
+
+  return [...changed].sort();
+}
+
+function validateFileAllowlistShape(fileAllowlist: unknown): asserts fileAllowlist is string[] {
+  if (!Array.isArray(fileAllowlist)) {
+    throw new InvalidFileAllowlistError(fileAllowlist, "expected a string array");
+  }
+  const hasInvalidEntry = fileAllowlist.some(
+    (entry) =>
+      typeof entry !== "string" ||
+      entry.trim().length === 0 ||
+      entry !== entry.trim() ||
+      entry.includes("\0") ||
+      entry.startsWith("/") ||
+      entry.split("/").some((segment) => segment === ".."),
+  );
+  if (hasInvalidEntry) {
+    throw new InvalidFileAllowlistError(fileAllowlist, "entries must be clean repository-relative paths or globs");
+  }
+}
+
+/** Gate 2's persisted implementation scope must be non-empty. */
+export function assertImplementationScope(fileAllowlist: unknown): asserts fileAllowlist is string[] {
+  validateFileAllowlistShape(fileAllowlist);
+  if (fileAllowlist.length === 0) {
+    throw new InvalidFileAllowlistError(fileAllowlist, "the implementation scope is empty");
   }
 }
 
@@ -99,7 +210,13 @@ function matchesAllowlist(file: string, allowlist: string[]): boolean {
 }
 
 export async function runImplementation(input: ImplementInput): Promise<ImplementResult> {
-  const baseSha = (await git(input.worktreePath, ["rev-parse", "HEAD"])).trim();
+  assertImplementationScope(input.fileAllowlist);
+  const before = await gitSnapshot(input.worktreePath);
+  const preRunWorkingTreeFiles = [...before.status.keys()].sort();
+  if (preRunWorkingTreeFiles.length > 0) {
+    throw new UnexpectedWorkingTreeChangeError(preRunWorkingTreeFiles, "before");
+  }
+  const baseSha = before.headSha;
 
   const brief = await loadAgentBriefByName(input.repoRoot, "scoped-fixer");
 
@@ -111,7 +228,7 @@ export async function runImplementation(input: ImplementInput): Promise<Implemen
     "--- Approved plan (Gate 1) ---",
     input.planMarkdown,
     "",
-    `File allowlist for this run: ${input.fileAllowlist.length > 0 ? input.fileAllowlist.join(", ") : "<none specified>"}`,
+    `File allowlist for this run: ${input.fileAllowlist.join(", ")}`,
     "",
     "When you are finished, commit your changes with a single git commit (or a small number of tightly related commits) before finishing. Leave the working tree clean.",
   ].join("\n");
@@ -128,20 +245,32 @@ export async function runImplementation(input: ImplementInput): Promise<Implemen
     input.tokenCeiling.record(result.usage);
   }
 
-  const headSha = (await git(input.worktreePath, ["rev-parse", "HEAD"])).trim();
+  const after = await gitSnapshot(input.worktreePath);
+  const headSha = after.headSha;
   const committed = headSha !== baseSha;
 
-  let filesChanged: string[] = [];
+  const workingTreeDelta = snapshotDeltaFiles(before, after);
+  let committedFiles: string[] = [];
   if (committed) {
-    const out = await git(input.worktreePath, ["diff", "--name-only", baseSha, "HEAD"]);
-    filesChanged = out.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+    committedFiles = splitNulList(
+      await git(input.worktreePath, ["diff", "--name-only", "-z", "--no-renames", baseSha, "HEAD", "--"]),
+    );
+  }
 
-    if (input.fileAllowlist.length > 0) {
-      const offending = filesChanged.filter((f) => !matchesAllowlist(f, input.fileAllowlist));
-      if (offending.length > 0) {
-        throw new AllowlistViolationError(offending, input.fileAllowlist);
-      }
-    }
+  const filesChanged = [...new Set([...committedFiles, ...workingTreeDelta])].sort();
+  const offending = filesChanged.filter((file) => !matchesAllowlist(file, input.fileAllowlist));
+  if (offending.length > 0) {
+    throw new AllowlistViolationError(offending, input.fileAllowlist);
+  }
+
+  // A committed change is the only expected post-run side effect. A dirty
+  // worktree after the model returns means it did not honor the commit/clean
+  // contract, even if the path itself is in scope; stop before verification.
+  const postRunWorkingTreeFiles = [...after.status.keys()].sort();
+  const postRunWorkingTreeSet = new Set(postRunWorkingTreeFiles);
+  const changedWorkingTreeFiles = workingTreeDelta.filter((file) => postRunWorkingTreeSet.has(file));
+  if (changedWorkingTreeFiles.length > 0) {
+    throw new UnexpectedWorkingTreeChangeError(changedWorkingTreeFiles);
   }
 
   return {

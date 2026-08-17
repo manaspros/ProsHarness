@@ -8,7 +8,7 @@ import { Surface } from "@/components/Surface";
 
 type Operation = {
   operation: "plan_pipeline" | "codex_review" | "claude_refinement" | "implementation";
-  state: "running" | "success" | "failed";
+  state: "running" | "success" | "failed" | "stopped";
   error?: string;
 };
 
@@ -31,10 +31,12 @@ export function PlanPipelineStatus({ waitingForPlan, waitingForApproval, operati
     return () => window.clearInterval(timer);
   }, [router, waitingForPlan, waitingForApproval, running]);
 
-  if (!waitingForPlan && !waitingForApproval && !running && operation?.state !== "failed") return null;
+  if (!waitingForPlan && !waitingForApproval && !running && operation?.state !== "failed" && operation?.state !== "stopped") return null;
 
-  const title = operation?.state === "failed"
-    ? "The operation failed"
+  const title = operation?.state === "stopped"
+    ? "Gate 2 stopped"
+    : operation?.state === "failed"
+      ? "The operation failed"
     : operation?.operation === "codex_review"
       ? "Codex is challenging this plan…"
       : operation?.operation === "claude_refinement"
@@ -45,13 +47,14 @@ export function PlanPipelineStatus({ waitingForPlan, waitingForApproval, operati
             ? "Building your plan…"
             : "Preparing plan approval…";
 
+  const terminal = operation?.state === "failed" || operation?.state === "stopped";
   return (
-    <Surface elevation="raised" grain={false} className={`flex items-center gap-3 p-4 ${operation?.state === "failed" ? "border-destructive/40 bg-destructive/10" : "border-status-running/30 bg-status-running/10"}`}>
-      {operation?.state === "failed" ? null : <Loader2 className="h-4 w-4 shrink-0 animate-spin text-status-running" />}
+    <Surface elevation="raised" grain={false} className={`flex items-center gap-3 p-4 ${terminal ? "border-destructive/40 bg-destructive/10" : "border-status-running/30 bg-status-running/10"}`}>
+      {terminal ? null : <Loader2 className="h-4 w-4 shrink-0 animate-spin text-status-running" />}
       <div className="text-sm">
         <p className="font-medium text-foreground">{title}</p>
         <p className="mt-0.5 text-xs text-muted-foreground">
-          {operation?.state === "failed"
+          {terminal
             ? operation.error ?? "The run recorded a failure. Open the Claude session for the details."
             : "This page updates automatically and shows the new plan when the operation completes."}
         </p>

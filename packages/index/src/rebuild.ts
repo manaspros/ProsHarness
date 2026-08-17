@@ -5,11 +5,12 @@
  * is the whole point of "SQLite is a rebuildable index, nothing more"
  * (docs/03-architecture.md).
  *
- * Rebuild strategy: delete-and-recreate the db file fresh on every call,
- * then repopulate from scratch. "Rebuildable" is read here as "starting
- * from a clean index", not "merge with whatever was there before" -- a
- * stale row left behind by a run that no longer exists on disk would
- * otherwise linger forever with no way to prove it's stale.
+ * Rebuild strategy: build a fresh temporary database on every call, then
+ * atomically replace the live db path only after population succeeds.
+ * "Rebuildable" is read here as "starting from a clean index", not "merge
+ * with whatever was there before" -- a stale row left behind by a run that no
+ * longer exists on disk would otherwise linger forever with no way to prove
+ * it's stale.
  *
  * Deviation from a literal reading of the task spec: rebuildIndex is async
  * (`Promise<RebuildReport>`), not sync. @pros/barrier's `Journal.read` is
@@ -25,7 +26,8 @@
  * call into packages/adapters -- the index must be derivable from raw text
  * alone, without depending on that package's parser.
  */
-import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdir, open, rename, rm, rmdir } from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { Journal, type JournalEntry } from "@pros/barrier";
@@ -125,14 +127,109 @@ interface PlanState {
   editedBy: string | null;
 }
 
-export async function rebuildIndex(dbPath: string, runsRoot: string): Promise<RebuildReport> {
-  if (existsSync(dbPath)) unlinkSync(dbPath);
-  for (const suffix of ["-wal", "-shm"]) {
-    if (existsSync(dbPath + suffix)) unlinkSync(dbPath + suffix);
+const INDEX_REBUILD_LOCK_TIMEOUT_MS = 10_000;
+
+async function fsyncDir(dirPath: string): Promise<void> {
+  const dh = await open(dirPath, "r");
+  try {
+    await dh.sync();
+  } finally {
+    await dh.close();
+  }
+}
+
+async function fsyncFile(filePath: string): Promise<void> {
+  const fh = await open(filePath, "r");
+  try {
+    await fh.sync();
+  } finally {
+    await fh.close();
+  }
+}
+
+/**
+ * Serialize rebuild writers with the same mkdir-as-mutex convention used by
+ * @pros/barrier and @pros/lease. Readers do not need this lock: they keep an
+ * already-open SQLite handle to the old inode while the completed replacement
+ * is renamed into place.
+ */
+async function withIndexRebuildLock<T>(dbPath: string, fn: () => Promise<T>): Promise<T> {
+  const lockPath = `${dbPath}.lock`;
+  const deadline = Date.now() + INDEX_REBUILD_LOCK_TIMEOUT_MS;
+  for (;;) {
+    try {
+      await mkdir(lockPath);
+      break;
+    } catch (err: any) {
+      if (err?.code !== "EEXIST") throw err;
+      if (Date.now() > deadline) {
+        throw new Error(`index rebuild lock at ${lockPath} held too long -- possible stuck rebuild`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5 + Math.random() * 15));
+    }
   }
 
+  try {
+    return await fn();
+  } finally {
+    await rmdir(lockPath).catch(() => undefined);
+  }
+}
+
+function temporaryDbPath(dbPath: string): string {
+  return `${dbPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+async function rebuildAndReplace(dbPath: string, runsRoot: string): Promise<RebuildReport> {
+  const tempPath = temporaryDbPath(dbPath);
+  try {
+    const report = await buildIndex(tempPath, runsRoot);
+    await fsyncFile(tempPath);
+    // The temporary database is complete and closed before this rename. On
+    // POSIX filesystems rename replaces the live path atomically, so readers
+    // see either the old complete database or the new complete database.
+    await rename(tempPath, dbPath);
+
+    // A previous live database may have been using WAL or may have left a
+    // rollback journal behind. Those sidecars belong to the old inode and
+    // must not be left beside the newly published main file. Remove them
+    // only after rename so an existing reader can continue using its old
+    // database while the replacement is being built and published.
+    for (const suffix of ["-journal", "-wal", "-shm"]) {
+      await rm(dbPath + suffix, { force: true });
+    }
+    await fsyncDir(path.dirname(dbPath));
+    return report;
+  } finally {
+    // DELETE journaling keeps the built database self-contained, but clean up
+    // any temporary artifacts as well if construction failed unexpectedly.
+    for (const suffix of ["", "-journal", "-wal", "-shm"]) {
+      await rm(tempPath + suffix, { force: true }).catch(() => undefined);
+    }
+  }
+}
+
+export async function rebuildIndex(dbPath: string, runsRoot: string): Promise<RebuildReport> {
+  await mkdir(path.dirname(dbPath), { recursive: true });
+  return withIndexRebuildLock(dbPath, () => rebuildAndReplace(dbPath, runsRoot));
+}
+
+async function buildIndex(dbPath: string, runsRoot: string): Promise<RebuildReport> {
   const db = new Database(dbPath);
-  db.pragma("journal_mode = WAL");
+  let dbClosed = false;
+  const closeDb = (): void => {
+    if (!dbClosed) {
+      db.close();
+      dbClosed = true;
+    }
+  };
+
+  try {
+    // The finished temporary database is renamed as one file. DELETE mode
+    // avoids a live database depending on separately named WAL/SHM sidecars at
+    // the instant of replacement.
+    db.pragma("journal_mode = DELETE");
+    db.pragma("synchronous = FULL");
   db.exec(SCHEMA_SQL);
 
   const report: RebuildReport = {
@@ -485,6 +582,10 @@ export async function rebuildIndex(dbPath: string, runsRoot: string): Promise<Re
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
   ).run({ ts: new Date().toISOString() });
 
-  db.close();
-  return report;
+    closeDb();
+    return report;
+  } catch (err) {
+    closeDb();
+    throw err;
+  }
 }

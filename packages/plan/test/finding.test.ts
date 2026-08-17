@@ -16,17 +16,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 test("runFinding parses a well-formed scripted finding", async () => {
   const canned = JSON.stringify({
     title: "off-by-one in sumAll",
-    evidence: [{ file: "loop.ts", line: 8, snippet: "for (let i = 0; i <= arr.length; i++) {" }],
+    evidence: [{ file: "loop.ts", line: 9, snippet: "for (let i = 0; i <= arr.length; i++) {" }],
     summary: "the loop bound should be `<` not `<=`",
   });
   const session = new ScriptedSession("claude", [{ text: canned }]);
+  const repo = path.join(__dirname, "fixtures/seeded-bug-src");
 
-  const finding = await runFinding(session, { cwd: "/tmp", description: "sumAll returns NaN sometimes", attemptId: "a1" });
+  const finding = await runFinding(session, { cwd: repo, description: "sumAll returns NaN sometimes", attemptId: "a1" });
 
   assert.equal(finding.title, "off-by-one in sumAll");
   assert.equal(finding.evidence.length, 1);
   assert.equal(finding.evidence[0]!.file, "loop.ts");
-  assert.equal(finding.evidence[0]!.line, 8);
+  assert.equal(finding.evidence[0]!.line, 9);
   assert.ok(finding.findingId.length > 0);
 });
 
@@ -66,12 +67,47 @@ test("runFinding throws on non-JSON model output", async () => {
   await assert.rejects(() => runFinding(session, { cwd: "/tmp", description: "whatever", attemptId: "a1" }), /not valid JSON/);
 });
 
+test("runFinding rejects evidence that is missing, outside the repo, or does not match the cited line", async () => {
+  const repo = path.join(__dirname, "fixtures/seeded-bug-src");
+  const cases = [
+    {
+      label: "missing file",
+      evidence: [{ file: "missing.ts", line: 1, snippet: "anything" }],
+      error: /does not exist/,
+    },
+    {
+      label: "outside repo",
+      evidence: [{ file: "../../finding.test.ts", line: 1, snippet: "import" }],
+      error: /outside repository/,
+    },
+    {
+      label: "wrong line",
+      evidence: [{ file: "loop.ts", line: 8, snippet: "for (let i = 0; i <= arr.length; i++) {" }],
+      error: /does not occur/,
+    },
+  ];
+
+  for (const item of cases) {
+    const session = new ScriptedSession("claude", [
+      {
+        text: JSON.stringify({ title: item.label, evidence: item.evidence, summary: "summary" }),
+      },
+    ]);
+    await assert.rejects(
+      () => runFinding(session, { cwd: repo, description: "find the bug", attemptId: `evidence-${item.label}` }),
+      item.error,
+    );
+  }
+});
+
 /**
  * Real-CLI acceptance test for the literal M2 acceptance claim: "Finding
  * cites the right file:line." Follows packages/mcp/test/acceptance.test.ts's
- * philosophy exactly: bounded timeout, skip (not fail) if the real model
- * doesn't respond in time. Costs real subscription quota -- kept minimal
- * (one tiny file, one obvious bug, one schema-constrained call).
+ * philosophy exactly: bounded timeout. The only permitted skip is when the
+ * real Claude CLI is unavailable; an installed provider that times out or
+ * returns invalid evidence must fail this acceptance. Costs real subscription
+ * quota -- kept minimal (one tiny file, one obvious bug, one schema-constrained
+ * call).
  */
 test("acceptance: real claude CLI finds the seeded off-by-one and cites the right file:line", async (t) => {
   const hasClaudeCli = await execFileAsync("which", ["claude"]).then(
@@ -84,7 +120,6 @@ test("acceptance: real claude CLI finds the seeded off-by-one and cites the righ
   }
 
   const repo = await mkdtemp(path.join(tmpdir(), "pros-plan-seeded-bug-"));
-  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     const fixtureSrc = path.join(__dirname, "fixtures/seeded-bug-src");
     await cp(fixtureSrc, repo, { recursive: true });
@@ -97,36 +132,17 @@ test("acceptance: real claude CLI finds the seeded off-by-one and cites the righ
     const session = new RealClaudeSession();
     const timeoutMs = 60_000;
 
-    const findingPromise = runFinding(session, {
+    const finding = await runFinding(session, {
       cwd: repo,
       description:
         "sumAll(arr) in loop.ts sometimes returns NaN for arrays that don't contain NaN/undefined values. Find the root cause.",
       attemptId: "acceptance-finding-1",
+      timeoutMs,
     });
-
-    const timeout = new Promise<"timeout">((resolve) => {
-      timeoutHandle = setTimeout(() => resolve("timeout"), timeoutMs);
-    });
-    const result = await Promise.race([findingPromise.then((f) => ({ finding: f }) as const), timeout]);
-
-    if (result === "timeout") {
-      t.skip(`the real claude CLI did not produce a finding within ${timeoutMs}ms`);
-      return;
-    }
-
-    const { finding } = result;
     const hit = finding.evidence.find((e) => e.file.includes("loop.ts") && e.line === 9);
-    if (!hit) {
-      // A real model can occasionally cite a slightly different (but still
-      // reasonable) line/wording. Per the acceptance-test philosophy, a
-      // live-model near-miss is reported via skip, not a hard failure --
-      // only a stubbed test is allowed to be load-bearing for this claim.
-      t.skip(`real model finding did not cite loop.ts:8 exactly -- evidence was: ${JSON.stringify(finding.evidence)}`);
-      return;
-    }
+    assert.ok(hit, `real model finding did not cite loop.ts:9 -- evidence was: ${JSON.stringify(finding.evidence)}`);
     assert.ok(hit.snippet.length > 0);
   } finally {
-    if (timeoutHandle) clearTimeout(timeoutHandle);
     await rm(repo, { recursive: true, force: true }).catch(() => undefined);
   }
 });

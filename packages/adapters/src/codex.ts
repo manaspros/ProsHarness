@@ -84,7 +84,7 @@ export function spawnCodex(opts: SpawnOptions): SpawnResult {
   // (measured: the live NDJSON stream's `thread.started` event does not
   // carry a codex-cli version field, so scraping stream events is not a
   // viable alternative — a dedicated check is simplest and most robust).
-  const versionSeen = execFileAsync("codex", ["--version"])
+  const versionSeen = execFileAsync("codex", ["--version"], { timeout: opts.timeoutMs, killSignal: "SIGKILL" })
     .then(({ stdout }) => stdout.trim())
     .catch(() => "");
 

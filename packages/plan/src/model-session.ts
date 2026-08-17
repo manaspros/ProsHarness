@@ -26,6 +26,8 @@ export interface ModelRunOptions {
   resumeSessionId?: string;
   /** Explicit opt-in for Claude's permission bypass; ignored by other providers. */
   dangerouslySkipPermissions?: boolean;
+  /** Bound a real CLI call; used by acceptance callers that must clean up safely on timeout. */
+  timeoutMs?: number;
   rawLogPath?: string;
   attemptId: string;
 }

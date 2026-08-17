@@ -106,7 +106,10 @@ test("awaiting_gate2: pr_created but pr_review checkpoint still parked", () => {
 test("shipped: pr_created and pr_review checkpoint answered", () => {
   const state = emptyState();
   state.checkpoints.set("cp1", cp({ gateType: "plan_approval", phase: "answered" }));
-  state.checkpoints.set("cp2", cp({ checkpointId: "cp2", gateType: "pr_review", phase: "answered", answer: "reviewed" }));
+  state.checkpoints.set(
+    "cp2",
+    cp({ checkpointId: "cp2", gateType: "pr_review", phase: "answered", answer: "reviewed", effect: "continue_within_approved_plan" }),
+  );
   assert.equal(
     deriveBoardStage(
       base({ state, plans: [plan()], hasVerifyVerdict: true, hasReviewCompleted: true, hasPrCreated: true }),
@@ -115,8 +118,14 @@ test("shipped: pr_created and pr_review checkpoint answered", () => {
   );
 });
 
-test("shipped: pr_created with no pr_review checkpoint recorded at all", () => {
-  assert.equal(deriveBoardStage(base({ hasPrCreated: true })), "shipped");
+test("awaiting_gate2: pr_created with no reviewed answer recorded", () => {
+  assert.equal(deriveBoardStage(base({ hasPrCreated: true })), "awaiting_gate2");
+});
+
+test("awaiting_gate2: a non-reviewed Gate 2 answer is not shipped", () => {
+  const state = emptyState();
+  state.checkpoints.set("cp2", cp({ checkpointId: "cp2", gateType: "pr_review", phase: "answered", answer: "looks good", effect: "continue_within_approved_plan" }));
+  assert.equal(deriveBoardStage(base({ state, hasPrCreated: true })), "awaiting_gate2");
 });
 
 test("unresolvedObjections / hasMajorUnresolved", () => {

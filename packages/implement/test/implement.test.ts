@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ModelRunOptions, ModelRunResult } from "@pros/plan";
 import { TokenCeiling, TokenCeilingExceededError } from "@pros/lease";
-import { runImplementation, AllowlistViolationError } from "../src/implement.js";
+import { InvalidFileAllowlistError, runImplementation, AllowlistViolationError } from "../src/implement.js";
 import { REPO_ROOT } from "./helpers.js";
 
 const execFileAsync = promisify(execFile);
@@ -91,7 +91,7 @@ test("session that makes no commit -> committed false", async () => {
       worktreePath: repo,
       branch: "main",
       planMarkdown: "# Plan",
-      fileAllowlist: [],
+      fileAllowlist: ["fix.txt"],
       runId: "run-2",
       attemptId: "run-2-implement",
       repoRoot: REPO_ROOT,
@@ -144,7 +144,7 @@ test("tokenCeiling exceeded propagates TokenCeilingExceededError", async () => {
           worktreePath: repo,
           branch: "main",
           planMarkdown: "# Plan",
-          fileAllowlist: [],
+          fileAllowlist: ["fix.txt"],
           runId: "run-4",
           attemptId: "run-4-implement",
           repoRoot: REPO_ROOT,
@@ -154,5 +154,45 @@ test("tokenCeiling exceeded propagates TokenCeilingExceededError", async () => {
     );
   } finally {
     await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("empty or malformed allowlists refuse before the model can make arbitrary changes", async () => {
+  for (const fileAllowlist of [
+    [],
+    undefined,
+    [undefined],
+    [""],
+  ] as unknown[]) {
+    const repo = await makeRepo();
+    let sessionCalled = false;
+    try {
+      const session = {
+        provider: "claude" as const,
+        async run(_opts: ModelRunOptions): Promise<ModelRunResult> {
+          sessionCalled = true;
+          throw new Error("the model must not run with an invalid allowlist");
+        },
+      };
+
+      await assert.rejects(
+        () =>
+          runImplementation({
+            claudeSession: session,
+            worktreePath: repo,
+            branch: "main",
+            planMarkdown: "# Plan",
+            fileAllowlist: fileAllowlist as string[],
+            runId: "invalid-scope",
+            attemptId: "invalid-scope-implement",
+            repoRoot: REPO_ROOT,
+          }),
+        InvalidFileAllowlistError,
+      );
+      assert.equal(sessionCalled, false);
+      assert.equal((await git(repo, ["status", "--porcelain"])).trim(), "");
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
   }
 });

@@ -17,6 +17,7 @@
  */
 import type Database from "better-sqlite3";
 import { rankHunks, buildFocusChecklist, type RiskRankedDiff, type ChecklistItem } from "@pros/review";
+import { isGate2StoppedError, type Gate2PipelineResultLike } from "./gate2.js";
 
 /**
  * Queries `events` for the highest-`seq` row of the given kind for this
@@ -35,8 +36,9 @@ export function parseLatestEventOfKind<T>(db: Database.Database, runId: string, 
 
 export interface PlanOperationStatus {
   operation: "plan_pipeline" | "codex_review" | "claude_refinement" | "implementation";
-  state: "running" | "success" | "failed";
+  state: "running" | "success" | "failed" | "stopped";
   error?: string;
+  result?: Gate2PipelineResultLike;
 }
 
 /** Returns the latest durable plan/implementation operation transition. */
@@ -47,12 +49,22 @@ export function getPlanOperationStatus(db: Database.Database, runId: string): Pl
     )
     .get(runId) as { kind: string; payload_json: string } | undefined;
   if (!row) return undefined;
-  const payload = JSON.parse(row.payload_json) as { operation?: PlanOperationStatus["operation"]; outcome?: "success" | "failed"; error?: string };
+  const payload = JSON.parse(row.payload_json) as {
+    operation?: PlanOperationStatus["operation"];
+    outcome?: "success" | "failed" | "stopped";
+    error?: string;
+    result?: Gate2PipelineResultLike;
+  };
   if (!payload.operation) return undefined;
+  const stopped = payload.outcome === "stopped" || Boolean(payload.result?.aborted) || isGate2StoppedError(payload.error);
+  const error = payload.error ?? (payload.result?.aborted
+    ? `Gate 2 stopped during ${payload.result.aborted.stage}: ${payload.result.aborted.reason}`
+    : undefined);
   return {
     operation: payload.operation,
-    state: row.kind === "plan_operation_started" ? "running" : payload.outcome ?? "failed",
-    error: payload.error,
+    state: row.kind === "plan_operation_started" ? "running" : stopped ? "stopped" : payload.outcome ?? "failed",
+    error,
+    result: payload.result,
   };
 }
 

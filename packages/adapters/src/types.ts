@@ -28,6 +28,8 @@ export interface SpawnOptions {
   dangerouslySkipPermissions?: boolean;
   extraArgs?: string[]; // e.g. ["--json-schema", schemaJson] / ["--output-schema", path]
   env?: Record<string, string>;
+  /** Kill the CLI if it does not finish within this many milliseconds. */
+  timeoutMs?: number;
   rawLogPath?: string; // if set, append every raw line here as it arrives (verbatim bytes, newline-delimited) — feeds packages/index's SQLite raw_events indexer (a separate package that tails these files, at-least-once, deduping by (attemptId, seq)). We only need to WRITE correctly (append, one line per event); fsync is not required here.
   attemptId: string; // used only to label rawLogPath entries if desired; not required to be parsed
 }

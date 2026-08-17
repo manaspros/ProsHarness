@@ -103,3 +103,31 @@ test("pros answer: a second answer for the same question id is rejected once cla
     );
   }
 });
+
+test("pros answer: Gate 1 amendment is explicitly unavailable", async () => {
+  const repo = await makeTempRepo();
+  const runsRoot = await mkdtemp(path.join(tmpdir(), "pros-cli-runs-amendment-"));
+  const runId = "run-cli-amendment";
+  const runDir = path.join(runsRoot, runId);
+  const prevRoot = process.env.PROS_RUNS_DIR;
+  process.env.PROS_RUNS_DIR = runsRoot;
+  try {
+    const barrier = await Barrier.open(runDir, runId);
+    const questionId = randomUUID();
+    await barrier.parkForGate1({
+      cwd: repo,
+      prompt: "approve?",
+      options: ["approve", "reject"],
+      questionId,
+      idempotencyKey: randomUUID(),
+      planRef: { planId: "plan-1", version: 1 },
+    });
+    await barrier.close();
+
+    await assert.rejects(() => runAnswerCommand([questionId, "amend", "--effect=requires_plan_amendment"]), /Gate 1 amendment is unavailable/);
+  } finally {
+    process.env.PROS_RUNS_DIR = prevRoot;
+    await rm(repo, { recursive: true, force: true }).catch(() => undefined);
+    await rm(runsRoot, { recursive: true, force: true }).catch(() => undefined);
+  }
+});

@@ -1,22 +1,20 @@
 /**
- * Pure logic: map a plan-approval button click (Approve / Request Amendment
- * / Reject) to the AnswerEffect that `Barrier.recordAnswer` must be called
+ * Pure logic: map a plan-approval button click (Approve / Reject) to the
+ * AnswerEffect that `Barrier.recordAnswer` must be called
  * with. Kept out of the route handler so it's independently unit-testable
  * (per the brief: "map an AnswerEffect button click to the right
  * recordAnswer args").
  */
 import type { AnswerEffect } from "@pros/barrier";
 
-export type PlanApprovalAction = "approve" | "request_amendment" | "reject";
+export type PlanApprovalAction = "approve" | "reject";
 
-export const PLAN_APPROVAL_ACTIONS: PlanApprovalAction[] = ["approve", "request_amendment", "reject"];
+export const PLAN_APPROVAL_ACTIONS: PlanApprovalAction[] = ["approve", "reject"];
 
 export function planActionToEffect(action: PlanApprovalAction): AnswerEffect {
   switch (action) {
     case "approve":
       return "continue_within_approved_plan";
-    case "request_amendment":
-      return "requires_plan_amendment";
     case "reject":
       return "abort";
     default: {

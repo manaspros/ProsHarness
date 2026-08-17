@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { spawnCli } from "../src/spawn-common.js";
 import { buildClaudeArgs } from "../src/claude.js";
 import type { ParsedEvent } from "../src/types.js";
@@ -121,4 +124,74 @@ test("spawnCli buffers stderr for failed-session diagnostics", async () => {
   }
   await result.exitCode;
   assert.match(await result.stderr, /codex approval failed/);
+});
+
+test("spawnCli exposes a nonzero CLI exit after the event stream is drained", async () => {
+  const result = spawnCli({
+    command: process.execPath,
+    args: ["-e", "process.stderr.write('cli failed'); process.exitCode = 7"],
+    provider: "claude",
+    opts: { cwd: process.cwd(), prompt: "", attemptId: "spawn-common-test-nonzero" },
+    parseLine: (raw, seq) => ({ provider: "claude", seq, raw, parseStatus: "ok" as const, data: raw }),
+  });
+
+  for await (const _event of result.events) {
+    // There is no stdout event; drain the stream to observe process close.
+  }
+  assert.equal(await result.exitCode, 7);
+  assert.match(await result.stderr, /cli failed/);
+});
+
+test("spawnCli times out and cleans up a CLI that ignores SIGTERM", async () => {
+  const result = spawnCli({
+    command: process.execPath,
+    args: ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
+    provider: "claude",
+    opts: { cwd: process.cwd(), prompt: "", attemptId: "spawn-common-test-timeout", timeoutMs: 25 },
+    parseLine: (raw, seq) => ({ provider: "claude", seq, raw, parseStatus: "ok" as const, data: raw }),
+  });
+  const started = Date.now();
+
+  await assert.rejects(
+    async () => {
+      for await (const _event of result.events) {
+        // The timeout occurs before this child emits anything.
+      }
+    },
+    /timed out after 25ms/,
+  );
+
+  assert.equal(await result.exitCode, null, "a signal-terminated CLI has no numeric exit code");
+  assert.ok(Date.now() - started < 2_500, "timeout cleanup must remain bounded even when SIGTERM is ignored");
+});
+
+test("spawnCli fails and cleans up when the raw log cannot be appended", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "pros-adapters-raw-log-failure-"));
+  const rawLogPath = path.join(tempDir, "raw.log");
+  await mkdir(rawLogPath);
+
+  try {
+    const result = spawnCli({
+      command: process.execPath,
+      args: ["-e", "process.on('SIGTERM', () => {}); console.log('{}'); setInterval(() => {}, 1000)"],
+      provider: "codex",
+      opts: { cwd: process.cwd(), prompt: "", attemptId: "spawn-common-test-raw-log", rawLogPath },
+      parseLine: (raw, seq) => ({ provider: "codex", seq, raw, parseStatus: "ok" as const, data: raw }),
+    });
+    const started = Date.now();
+
+    await assert.rejects(
+      async () => {
+        for await (const _event of result.events) {
+          // The first line fails before it can be parsed or yielded.
+        }
+      },
+      /failed to write raw log/,
+    );
+
+    assert.equal(await result.exitCode, null, "the failed raw-log attempt must be terminated");
+    assert.ok(Date.now() - started < 2_500, "raw-log failure cleanup must remain bounded");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });

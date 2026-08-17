@@ -4,7 +4,7 @@ import { Journal } from "./journal.js";
 import { Guardian } from "./guardian.js";
 import { Fence, StaleFenceError } from "./fence.js";
 import { snapshotManifest, computeHeadSha, readManifest } from "./manifest.js";
-import { loadRunState, type RunState } from "./run-state.js";
+import { loadRunState, projectRunState, type RunState } from "./run-state.js";
 import type { AnswerEffect, LaunchConfig } from "./types.js";
 
 export { StaleFenceError };
@@ -27,6 +27,111 @@ export interface CheckpointRequest {
   /** Present only when gateType is "plan_approval". */
   planRef?: { planId: string; version: number };
   /** Present only when gateType is "pr_review". */
+  prRef?: { url: string; number: number; headSha: string };
+}
+
+const ANSWER_EFFECTS: readonly AnswerEffect[] = [
+  "continue_within_approved_plan",
+  "requires_plan_amendment",
+  "abort",
+];
+const GATE_TYPES = ["ask_human", "plan_approval", "pr_review"] as const;
+type GateType = (typeof GATE_TYPES)[number];
+
+function requireNonEmptyString(value: unknown, field: string): asserts value is string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`${field} must be a non-empty string`);
+  }
+}
+
+function validateOptions(options: unknown): asserts options is string[] {
+  if (!Array.isArray(options) || options.some((option) => typeof option !== "string" || option.trim().length === 0)) {
+    throw new Error("options must be an array of strings");
+  }
+}
+
+function validateGateType(gateType: unknown): asserts gateType is GateType {
+  if (!GATE_TYPES.includes(gateType as GateType)) {
+    throw new Error(`invalid gateType: ${String(gateType)}`);
+  }
+}
+
+function validatePlanRef(planRef: unknown): asserts planRef is { planId: string; version: number } {
+  if (
+    typeof planRef !== "object" ||
+    planRef === null ||
+    !("planId" in planRef) ||
+    !("version" in planRef)
+  ) {
+    throw new Error("planRef must contain planId and version");
+  }
+  const ref = planRef as { planId: unknown; version: unknown };
+  requireNonEmptyString(ref.planId, "planRef.planId");
+  if (typeof ref.version !== "number" || !Number.isInteger(ref.version) || ref.version < 1) {
+    throw new Error("planRef.version must be a positive integer");
+  }
+}
+
+function validatePrRef(prRef: unknown): asserts prRef is { url: string; number: number; headSha: string } {
+  if (
+    typeof prRef !== "object" ||
+    prRef === null ||
+    !("url" in prRef) ||
+    !("number" in prRef) ||
+    !("headSha" in prRef)
+  ) {
+    throw new Error("prRef must contain url, number, and headSha");
+  }
+  const ref = prRef as { url: unknown; number: unknown; headSha: unknown };
+  requireNonEmptyString(ref.url, "prRef.url");
+  if (typeof ref.number !== "number" || !Number.isInteger(ref.number) || ref.number < 1) {
+    throw new Error("prRef.number must be a positive integer");
+  }
+  requireNonEmptyString(ref.headSha, "prRef.headSha");
+}
+
+function validateCheckpointRequest(req: CheckpointRequest): void {
+  requireNonEmptyString(req.attemptId, "attemptId");
+  requireNonEmptyString(req.questionId, "questionId");
+  requireNonEmptyString(req.idempotencyKey, "idempotencyKey");
+  requireNonEmptyString(req.prompt, "prompt");
+  validateOptions(req.options);
+
+  const gateType = req.gateType ?? "ask_human";
+  validateGateType(gateType);
+  if (gateType === "plan_approval") {
+    validatePlanRef(req.planRef);
+    if (req.prRef !== undefined) throw new Error("prRef is only valid for pr_review checkpoints");
+  } else if (gateType === "pr_review") {
+    validatePrRef(req.prRef);
+    if (req.planRef !== undefined) throw new Error("planRef is only valid for plan_approval checkpoints");
+  } else if (req.planRef !== undefined || req.prRef !== undefined) {
+    throw new Error("planRef/prRef require their corresponding gateType");
+  }
+}
+
+function validateAnswerInput(answer: unknown, effect: unknown): asserts answer is string {
+  requireNonEmptyString(answer, "answer");
+  if (!ANSWER_EFFECTS.includes(effect as AnswerEffect)) {
+    throw new Error(`invalid answer effect: ${effect}`);
+  }
+}
+
+function validateAnswerIdentifiers(checkpointId: unknown, questionId: unknown, idempotencyKey: unknown): void {
+  requireNonEmptyString(checkpointId, "checkpointId");
+  requireNonEmptyString(questionId, "questionId");
+  requireNonEmptyString(idempotencyKey, "idempotencyKey");
+}
+
+interface SyntheticCheckpointOptions {
+  cwd: string;
+  prompt: string;
+  options: string[];
+  questionId: string;
+  idempotencyKey: string;
+  attemptId: string;
+  gateType: Exclude<GateType, "ask_human">;
+  planRef?: { planId: string; version: number };
   prRef?: { url: string; number: number; headSha: string };
 }
 
@@ -131,7 +236,7 @@ export class Barrier {
     if (this.guardians.size === 0) return;
     this.state = await loadRunState(this.runDir);
     for (const cp of this.state.checkpoints.values()) {
-      if (cp.phase !== "checkpoint_requested") continue;
+      if (cp.phase !== "checkpoint_requested" && cp.phase !== "quiescing") continue;
       if (!this.guardians.has(cp.attemptId)) continue; // not ours to enforce
       if (this.claimed.has(cp.checkpointId)) continue;
 
@@ -159,9 +264,17 @@ export class Barrier {
         gateType: cp.gateType,
         planRef: cp.planRef,
       };
-      const promise = this.proceedCheckpoint(req, cp.checkpointId).finally(() => {
-        this.inFlight.delete(cp.checkpointId);
-      });
+      const promise = this.proceedCheckpoint(req, cp.checkpointId)
+        .catch((err) => {
+          // A partially completed checkpoint remains retryable. The durable
+          // phase is the source of truth; this in-memory claim only prevents
+          // overlapping work within this Barrier instance.
+          this.claimed.delete(cp.checkpointId);
+          throw err;
+        })
+        .finally(() => {
+          this.inFlight.delete(cp.checkpointId);
+        });
       this.inFlight.set(cp.checkpointId, promise);
       await promise;
     }
@@ -299,65 +412,76 @@ export class Barrier {
 
   /**
    * Entry point for `ask_human`. Never resolves with "the question was
-   * answered" -- callers (the MCP tool handler) must not treat this
-   * resolving as permission to keep going; it only means the intent is
-   * durable. The daemon, not the tool, is what freezes the attempt.
-   */
+  * answered" -- callers (the MCP tool handler) must not treat this
+  * resolving as permission to keep going; it only means the intent is
+  * durable. The daemon, not the tool, is what freezes the attempt.
+  */
   async requestCheckpoint(req: CheckpointRequest): Promise<{ checkpointId: string; deferred: boolean }> {
-    const existing = this.state.idempotencyIndex.get(req.idempotencyKey);
-    if (existing) {
-      // A replayed tool call after a crash must not mint a second question.
-      return { checkpointId: existing, deferred: false };
-    }
+    validateCheckpointRequest(req);
+    // Decide whether this request creates a checkpoint while holding the
+    // journal mutex. A retry racing another process therefore observes the
+    // winner's durable checkpoint instead of minting a second one.
+    const { checkpointId } = await this.journal.transaction(async ({ entries, append }) => {
+      const durableState = projectRunState(entries);
+      const existing = durableState.idempotencyIndex.get(req.idempotencyKey);
+      if (existing) return { checkpointId: existing };
 
-    const checkpointId = randomUUID();
+      const createdCheckpointId = randomUUID();
 
-    // Step 1: durable-append the checkpoint intent and fsync, BEFORE any
-    // containment action, so a crash right after this point still leaves a
-    // recoverable record that a checkpoint was requested. This is the ONLY
-    // step this method performs -- see startPoller() for why steps 2-5
-    // happen out of band rather than inline.
-    await this.journal.append({
-      runId: this.runId,
-      fenceEpoch: this.fence.current(),
-      kind: "checkpoint_requested",
-      checkpointId,
-      attemptId: req.attemptId,
-      questionId: req.questionId,
-      idempotencyKey: req.idempotencyKey,
-      prompt: req.prompt,
-      options: req.options,
-      gateType: req.gateType ?? "ask_human",
-      planRef: req.planRef,
+      // Step 1: durable-append the checkpoint intent and fsync, BEFORE any
+      // containment action, so a crash right after this point still leaves a
+      // recoverable record that a checkpoint was requested. This is the ONLY
+      // step this method performs -- see startPoller() for why steps 2-5
+      // happen out of band rather than inline.
+      await append({
+        runId: this.runId,
+        fenceEpoch: durableState.fenceEpoch,
+        kind: "checkpoint_requested",
+        checkpointId: createdCheckpointId,
+        attemptId: req.attemptId,
+        questionId: req.questionId,
+        idempotencyKey: req.idempotencyKey,
+        prompt: req.prompt,
+        options: req.options,
+        gateType: req.gateType ?? "ask_human",
+        planRef: req.planRef,
+        prRef: req.prRef,
+      });
+      return { checkpointId: createdCheckpointId };
     });
     this.state = await loadRunState(this.runDir);
 
-    // If this instance owns the attempt's guardian, kick the poller
-    // immediately instead of waiting up to 20ms -- keeps the common
-    // (same-process) path snappy. If it doesn't own the guardian (an
-    // ask_human subprocess calling in), the OWNING process's poller is
-    // solely responsible, on its own schedule, and this call cannot know
-    // yet whether it will be deferred.
-    let deferred = false;
-    if (this.guardians.has(req.attemptId)) {
+    return this.settleCheckpointRequest(checkpointId);
+  }
+
+  /**
+   * Drive a locally-owned incomplete checkpoint to its resting state, waiting
+   * for whichever poller invocation owns the work. A caller in a process that
+   * does not own the Guardian cannot complete the containment sequence; it
+   * gets `deferred: true` until the owning process parks it.
+   */
+  private async settleCheckpointRequest(checkpointId: string): Promise<{ checkpointId: string; deferred: boolean }> {
+    this.state = await loadRunState(this.runDir);
+    const checkpoint = this.state.checkpoints.get(checkpointId);
+    if (!checkpoint) throw new Error(`checkpoint ${checkpointId} disappeared after request`);
+    const phase = checkpoint.phase;
+    const incomplete = phase === "checkpoint_requested" || phase === "quiescing";
+
+    if (incomplete && this.guardians.has(checkpoint.attemptId)) {
+      // If the free-running poller already claimed it, pollOnce() will leave
+      // the real work in `inFlight`; the wait below is what makes an
+      // idempotent retry observe completion rather than merely intent.
       await this.pollOnce();
-      // The free-running 20ms timer's own pollOnce() tick can overlap this
-      // one and win the race to claim this exact checkpoint (its
-      // loadRunState() happened to resolve first) -- in that case OUR
-      // pollOnce() above saw "already claimed" and returned without doing
-      // anything, even though the real freeze+kill+snapshot+parked sequence
-      // is still running in that other invocation. Wait for it here so this
-      // method never returns before the checkpoint has actually reached its
-      // resting phase (parked or still-deferred) -- callers like
-      // `Barrier.close()` right after this must not be able to race ahead
-      // of it.
       const inFlight = this.inFlight.get(checkpointId);
       if (inFlight) await inFlight;
       this.state = await loadRunState(this.runDir);
-      deferred = this.state.checkpoints.get(checkpointId)?.phase === "checkpoint_requested";
     }
 
-    return { checkpointId, deferred };
+    const finalPhase = this.state.checkpoints.get(checkpointId)?.phase;
+    return {
+      checkpointId,
+      deferred: finalPhase === "checkpoint_requested" || finalPhase === "quiescing",
+    };
   }
 
   private async proceedCheckpoint(req: CheckpointRequest, checkpointId: string): Promise<void> {
@@ -532,59 +656,72 @@ export class Barrier {
     idempotencyKey: string;
     prRef: { url: string; number: number; headSha: string };
   }): Promise<{ checkpointId: string }> {
-    const existing = this.state.idempotencyIndex.get(opts.idempotencyKey);
-    if (existing) {
-      return { checkpointId: existing };
-    }
+    const { checkpointId, created } = await this.journal.transaction(async ({ entries, append }) => {
+      // Read durable state while holding the journal mutex. `this.state` can
+      // be stale when another Barrier instance is serving the same run.
+      const durableState = projectRunState(entries);
+      const existing = durableState.idempotencyIndex.get(opts.idempotencyKey);
+      if (existing) return { checkpointId: existing, created: false };
 
-    const checkpointId = randomUUID();
-    const attemptId = "gate2-pipeline"; // synthetic: no live attempt/guardian backs a PR-review gate
+      const createdCheckpointId = randomUUID();
+      const attemptId = "gate2-pipeline"; // synthetic: no live attempt/guardian backs a PR-review gate
+      const fenceEpoch = durableState.fenceEpoch;
 
-    await this.journal.append({
-      runId: this.runId,
-      fenceEpoch: this.fence.current(),
-      kind: "checkpoint_requested",
-      checkpointId,
-      attemptId,
-      questionId: opts.questionId,
-      idempotencyKey: opts.idempotencyKey,
-      prompt: opts.prompt,
-      options: opts.options,
-      gateType: "pr_review",
-      prRef: opts.prRef,
-    });
+      // Keep the lookup, checkpoint intent, quiescing transition, manifest
+      // snapshot, and parked transition in one journal transaction. A
+      // concurrent same-key caller therefore waits for this sequence and
+      // observes the checkpoint created here instead of minting another one.
+      await append({
+        runId: this.runId,
+        fenceEpoch,
+        kind: "checkpoint_requested",
+        checkpointId: createdCheckpointId,
+        attemptId,
+        questionId: opts.questionId,
+        idempotencyKey: opts.idempotencyKey,
+        prompt: opts.prompt,
+        options: opts.options,
+        gateType: "pr_review",
+        prRef: opts.prRef,
+      });
 
-    await this.journal.append({
-      runId: this.runId,
-      fenceEpoch: this.fence.current(),
-      kind: "quiescing",
-      checkpointId,
-      attemptId,
-    });
+      await append({
+        runId: this.runId,
+        fenceEpoch,
+        kind: "quiescing",
+        checkpointId: createdCheckpointId,
+        attemptId,
+      });
 
-    const baseSha = await computeHeadSha(opts.cwd);
-    const manifest = await snapshotManifest(this.runDir, {
-      runId: this.runId,
-      cwd: opts.cwd,
-      baseSha,
-      fenceEpoch: this.fence.current(),
-      launchConfig: {
-        provider: "fixture",
-        command: "",
-        args: [],
+      const baseSha = await computeHeadSha(opts.cwd);
+      const manifest = await snapshotManifest(this.runDir, {
+        runId: this.runId,
         cwd: opts.cwd,
-      },
+        baseSha,
+        fenceEpoch,
+        launchConfig: {
+          provider: "fixture",
+          command: "",
+          args: [],
+          cwd: opts.cwd,
+        },
+      });
+
+      await append({
+        runId: this.runId,
+        fenceEpoch,
+        kind: "parked",
+        checkpointId: createdCheckpointId,
+        attemptId,
+        manifestPath: path.join(this.runDir, "manifest.json"),
+        workingStateHash: manifest.workingStateHash,
+      });
+
+      return { checkpointId: createdCheckpointId, created: true };
     });
 
-    await this.journal.append({
-      runId: this.runId,
-      fenceEpoch: this.fence.current(),
-      kind: "parked",
-      checkpointId,
-      attemptId,
-      manifestPath: path.join(this.runDir, "manifest.json"),
-      workingStateHash: manifest.workingStateHash,
-    });
+    this.state = await loadRunState(this.runDir);
+    if (!created) return { checkpointId };
 
     this.fireParked({
       runId: this.runId,
@@ -595,7 +732,6 @@ export class Barrier {
       prRef: opts.prRef,
     });
 
-    this.state = await loadRunState(this.runDir);
     return { checkpointId };
   }
 
@@ -608,28 +744,70 @@ export class Barrier {
     answer: string,
     effect: AnswerEffect,
   ): Promise<void> {
-    const cp = this.state.checkpoints.get(checkpointId);
-    if (!cp) throw new Error(`unknown checkpoint ${checkpointId}`);
-    if (cp.phase !== "parked") {
-      // answer_rejected_stale: the run already moved past this checkpoint.
-      throw new StaleAnswerError(checkpointId, cp.phase);
-    }
+    validateAnswerIdentifiers(checkpointId, questionId, idempotencyKey);
+    validateAnswerInput(answer, effect);
 
-    await this.journal.append({
-      runId: this.runId,
-      fenceEpoch: this.fence.current(),
-      kind: "answered",
-      checkpointId,
-      questionId,
-      idempotencyKey,
-      answer,
-      effect,
+    // The checkpoint read and the conditional answer append must be one
+    // journal transaction. Reading this.state before append() is not enough:
+    // another Barrier instance can answer the same checkpoint between those
+    // two operations. Journal.transaction replays the durable state while
+    // holding the existing cross-process writer mutex, so only one caller can
+    // observe `parked` and append `answered`.
+    const rejection = await this.journal.transaction(async ({ entries, append }) => {
+      const durableState = projectRunState(entries);
+      const cp = durableState.checkpoints.get(checkpointId);
+      if (!cp) throw new Error(`unknown checkpoint ${checkpointId}`);
+
+      if (cp.questionId !== questionId) {
+        throw new Error(`questionId does not match checkpoint ${checkpointId}`);
+      }
+      if (cp.idempotencyKey !== idempotencyKey) {
+        throw new Error(`idempotencyKey does not match checkpoint ${checkpointId}`);
+      }
+      // An empty options list means the question accepts free text. When
+      // choices are declared, accepting anything else would let a caller
+      // bypass the question contract.
+      if (cp.options.length > 0 && !cp.options.includes(answer)) {
+        throw new Error(`answer must be one of the options for checkpoint ${checkpointId}`);
+      }
+
+      if (cp.phase !== "parked") {
+        const auditKind = cp.phase === "answered" ? "answer_late" : "answer_rejected_stale";
+        await append({
+          runId: this.runId,
+          fenceEpoch: durableState.fenceEpoch,
+          kind: auditKind,
+          checkpointId,
+          questionId,
+          idempotencyKey,
+          answer,
+          effect,
+          phase: cp.phase,
+        });
+        return { auditKind, phase: cp.phase } as const;
+      }
+
+      await append({
+        runId: this.runId,
+        fenceEpoch: durableState.fenceEpoch,
+        kind: "answered",
+        checkpointId,
+        questionId,
+        idempotencyKey,
+        answer,
+        effect,
+      });
+      return undefined;
     });
 
-    if (effect === "requires_plan_amendment" || effect === "abort") {
+    if (!rejection && (effect === "requires_plan_amendment" || effect === "abort")) {
       await this.fence.bump(`answer effect: ${effect}`);
     }
     this.state = await loadRunState(this.runDir);
+
+    if (rejection) {
+      throw new StaleAnswerError(checkpointId, rejection.phase, rejection.auditKind);
+    }
   }
 
   // ---- resume ---------------------------------------------------------------
@@ -687,6 +865,7 @@ export class StaleAnswerError extends Error {
   constructor(
     public readonly checkpointId: string,
     public readonly phase: string,
+    public readonly auditKind: "answer_late" | "answer_rejected_stale" = "answer_rejected_stale",
   ) {
     super(`checkpoint ${checkpointId} is not parked (phase=${phase}); answer rejected as stale`);
     this.name = "StaleAnswerError";

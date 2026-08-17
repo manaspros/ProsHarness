@@ -74,6 +74,12 @@ test("parked_awaiting_answer: parked checkpoint with no gateType (legacy default
   assert.equal(deriveRunStatus(state), "parked_awaiting_answer");
 });
 
+test("parked_awaiting_gate2: parked pr_review checkpoint", () => {
+  const state = emptyState();
+  state.checkpoints.set("cp1", cp({ phase: "parked", gateType: "pr_review" }));
+  assert.equal(deriveRunStatus(state), "parked_awaiting_gate2");
+});
+
 test("a non-parked checkpoint does not count as parked", () => {
   const state = emptyState();
   state.checkpoints.set("cp1", cp({ phase: "answered", gateType: "ask_human" }));

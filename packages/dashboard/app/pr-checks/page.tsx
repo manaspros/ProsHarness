@@ -15,6 +15,8 @@ import {
 } from "@/lib/review-data";
 import { rebuildAndOpenIndex } from "@/lib/db";
 import { deriveRunStatus, RUN_STATUS_LABELS } from "@/lib/run-status";
+import { getPlanOperationStatus } from "@/lib/review-data";
+import { gate2ReviewDecision, isGate2StoppedOperation } from "@/lib/gate2";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +28,7 @@ interface PrCheckEntry {
   pr?: PrCreatedPayload;
   verification?: VerifyVerdictPayload;
   review?: ReviewCompletedPayload;
+  operationError?: string;
   runStatus: string;
 }
 
@@ -40,13 +43,88 @@ export default async function PrChecksPage() {
         const verification = parseLatestEventOfKind<VerifyVerdictPayload>(db, run.runId, "verify_verdict");
         const review = parseLatestEventOfKind<ReviewCompletedPayload>(db, run.runId, "review_completed");
         const pr = parseLatestEventOfKind<PrCreatedPayload>(db, run.runId, "pr_created");
+        const operation = getPlanOperationStatus(db, run.runId);
+        const gate1Checkpoint = [...run.state.checkpoints.values()].find((checkpoint) => checkpoint.gateType === "plan_approval");
+        const gate2Checkpoint = [...run.state.checkpoints.values()].find((checkpoint) => checkpoint.gateType === "pr_review");
+        const gate2Stopped = isGate2StoppedOperation(operation);
 
-        if (pr) {
+        if (gate1Checkpoint?.phase === "answered" && gate1Checkpoint.effect === "abort") {
           return {
             runId: run.runId,
-            status: "pass" as Status,
-            label: "PR ready",
-            detail: `Draft PR #${pr.number} is ready for your review`,
+            status: "fail" as Status,
+            label: "Gate 1 aborted",
+            detail: "The plan was rejected; Gate 2 did not start.",
+            verification,
+            review,
+            runStatus: RUN_STATUS_LABELS[deriveRunStatus(run.state)],
+          };
+        }
+
+        if (gate1Checkpoint?.phase === "answered" && gate1Checkpoint.effect === "requires_plan_amendment") {
+          return {
+            runId: run.runId,
+            status: "blocked" as Status,
+            label: "Gate 1 amendment required",
+            detail: "The amendment flow is unavailable; no implementation will start.",
+            verification,
+            review,
+            runStatus: RUN_STATUS_LABELS[deriveRunStatus(run.state)],
+          };
+        }
+
+        if (gate2Stopped) {
+          const operationError = operation?.error ?? "Gate 2 stopped before producing a PR";
+          return {
+            runId: run.runId,
+            status: "fail" as Status,
+            label: "Gate 2 stopped",
+            detail: operationError,
+            verification,
+            review,
+            operationError,
+            runStatus: RUN_STATUS_LABELS[deriveRunStatus(run.state)],
+          };
+        }
+
+        if (operation?.operation === "implementation" && operation.state === "failed") {
+          const operationError = operation.error ?? "Gate 2 failed before producing a PR";
+          return {
+            runId: run.runId,
+            status: "fail" as Status,
+            label: "Gate 2 failed",
+            detail: operationError,
+            verification,
+            review,
+            operationError,
+            runStatus: RUN_STATUS_LABELS[deriveRunStatus(run.state)],
+          };
+        }
+
+        if (operation?.operation === "implementation" && operation.state === "running") {
+          return {
+            runId: run.runId,
+            status: "running" as Status,
+            label: "Gate 2 running",
+            detail: "Implementation and review are still in progress",
+            verification,
+            review,
+            runStatus: RUN_STATUS_LABELS[deriveRunStatus(run.state)],
+          };
+        }
+
+        if (pr) {
+          const reviewDecision = gate2ReviewDecision(gate2Checkpoint);
+          const awaitingReview = reviewDecision === "awaiting_review" || reviewDecision === "not_recorded";
+          const invalidAnswer = reviewDecision === "invalid_answer";
+          return {
+            runId: run.runId,
+            status: (invalidAnswer ? "fail" : awaitingReview ? "parked" : "pass") as Status,
+            label: invalidAnswer ? "Gate 2 answer invalid" : awaitingReview ? "Gate 2 review" : "Reviewed",
+            detail: invalidAnswer
+              ? "The recorded answer does not confirm a reviewed PR"
+              : awaitingReview
+                ? `Draft PR #${pr.number} is waiting for your review`
+                : `Draft PR #${pr.number} was reviewed`,
             pr,
             verification,
             review,
@@ -58,8 +136,8 @@ export default async function PrChecksPage() {
           return {
             runId: run.runId,
             status: (blocked ? "fail" : "parked") as Status,
-            label: blocked ? "Blocked" : "Review passed",
-            detail: blocked ? "Review found unresolved blockers" : "Waiting for the implementation handoff",
+            label: blocked ? "Blocked" : "Automated review passed",
+            detail: blocked ? "Review found unresolved blockers" : "Waiting for the implementation handoff; human Gate 2 review is not recorded",
             verification,
             review,
             runStatus: RUN_STATUS_LABELS[deriveRunStatus(run.state)],
@@ -89,8 +167,8 @@ export default async function PrChecksPage() {
     db.close();
   }
 
-  const ready = entries.filter((entry) => entry.pr).length;
-  const blocked = entries.filter((entry) => entry.status === "fail").length;
+  const ready = entries.filter((entry) => entry.pr && entry.status === "parked").length;
+  const blocked = entries.filter((entry) => entry.status === "fail" || entry.status === "blocked").length;
   const inProgress = entries.filter((entry) => entry.status === "running" || entry.status === "parked").length;
 
   return (

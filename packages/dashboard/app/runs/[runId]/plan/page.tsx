@@ -76,11 +76,14 @@ export default async function PlanPage({
   // "Unresolved" = no resolution recorded yet, or explicitly not accepted.
   const unresolvedObjections = objections.filter((o) => !o.resolution || o.resolution !== "accepted");
 
-  // Find a parked plan_approval checkpoint for this run, if any -- the
-  // Approve/Amendment/Reject buttons only appear when one exists, and use
-  // ITS OWN questionId/idempotencyKey (never invented ones), per the brief.
+  // Find a parked plan_approval checkpoint for this run, if any. Gate 1's
+  // amendment path is deliberately unavailable until a complete re-park /
+  // re-review flow exists, so this page exposes only approve and reject.
   const parkedApprovalCheckpoint = state
     ? [...state.checkpoints.values()].find((cp) => cp.gateType === "plan_approval" && cp.phase === "parked")
+    : undefined;
+  const answeredGate1 = state
+    ? [...state.checkpoints.values()].find((cp) => cp.gateType === "plan_approval" && cp.phase === "answered")
     : undefined;
   const operationRunning = operation?.state === "running";
   const waitingForPlan = (waitingForPipeline || operationRunning) && !current && operation?.operation !== "implementation";
@@ -126,6 +129,21 @@ export default async function PlanPage({
 
       <PlanPipelineStatus waitingForPlan={waitingForPlan} waitingForApproval={waitingForApproval} operation={operation} />
       <LiveSessionPanel runId={runId} initial={sessionActivity} />
+
+      {answeredGate1?.effect === "requires_plan_amendment" && (
+        <Surface elevation="raised" className="border-status-blocked/40 bg-status-blocked/10 p-4">
+          <StatusPill status="blocked" label="Gate 1 amendment required" />
+          <p className="mt-2 text-sm text-muted-foreground">
+            Plan amendment is currently unavailable. No implementation will start from this answer; create a new plan review when the plan needs to change.
+          </p>
+        </Surface>
+      )}
+      {answeredGate1?.effect === "abort" && (
+        <Surface elevation="raised" className="border-status-fail/40 bg-status-fail/10 p-4">
+          <StatusPill status="fail" label="Gate 1 aborted" />
+          <p className="mt-2 text-sm text-muted-foreground">This plan was rejected and Gate 2 will not start.</p>
+        </Surface>
+      )}
 
       {!current ? (
         <div className="mt-6">
@@ -381,13 +399,6 @@ function PlanContent({
                 buttonProps={{ variant: "default", size: "lg", className: "w-full font-semibold" }}
               />
               <div className="flex gap-2">
-                <GateActionForm
-                  runId={runId}
-                  checkpointId={parkedApprovalCheckpoint.checkpointId}
-                  action="request_amendment"
-                  label="Request Amendment"
-                  buttonProps={{ variant: "outline", size: "sm", className: "flex-1" }}
-                />
                 <GateActionForm
                   runId={runId}
                   checkpointId={parkedApprovalCheckpoint.checkpointId}

@@ -88,6 +88,14 @@ test("barrier: kill-test #9 - checkpoint requested during an unsafe section is d
     let state = barrier.getState();
     assert.equal(state.checkpoints.get(checkpointId)?.phase, "checkpoint_requested");
 
+    // Replaying the incomplete request must report the same incomplete state;
+    // it must not claim that this checkpoint is parked before containment has
+    // actually finished.
+    const retry = await askQuestion(barrier, attemptId, barrier.getState().checkpoints.get(checkpointId)!.idempotencyKey);
+    assert.equal(retry.checkpointId, checkpointId);
+    assert.equal(retry.deferred, true);
+    assert.notEqual(barrier.getState().checkpoints.get(checkpointId)?.phase, "parked");
+
     await barrier.exitUnsafeSection("git-rebase-lock");
     // Deferred checkpoint should now have proceeded through quiescing -> parked.
     const parked = await waitFor(async () => barrier.getState().checkpoints.get(checkpointId)?.phase === "parked", 5000);
@@ -138,9 +146,74 @@ test("barrier: kill-test #6b - answering an already-answered checkpoint is rejec
     // rejected rather than silently re-applied.
     await assert.rejects(
       () => barrier.recordAnswer(checkpointId, questionId, idem, "no", "abort"),
-      StaleAnswerError,
+      (err: unknown) => err instanceof StaleAnswerError && err.auditKind === "answer_rejected_stale" && err.phase === "claimed",
     );
+    const { entries } = await Journal.read(runDir);
+    assert.equal(entries.filter((entry) => entry.kind === "answered").length, 1);
+    assert.equal(entries.filter((entry) => entry.kind === "answer_rejected_stale").length, 1);
     await barrier.close();
+  } finally {
+    await killUnitsMatching("pros-");
+    await cleanupDir(repo);
+    await cleanupDir(runDir);
+  }
+});
+
+test("barrier: answer validation and journal mutex make concurrent answers first-writer-wins", async () => {
+  const repo = await makeTempRepo();
+  const runDir = await makeRunDir();
+  try {
+    const owner = await Barrier.open(runDir, "run-answer-race");
+    const { attemptId } = await owner.startAttempt({
+      launchConfig: { provider: "fixture", command: "sleep", args: ["30"], cwd: repo },
+    });
+    const questionId = randomUUID();
+    const idempotencyKey = randomUUID();
+    const { checkpointId } = await owner.requestCheckpoint({
+      attemptId,
+      questionId,
+      idempotencyKey,
+      prompt: "continue?",
+      options: ["yes", "no"],
+    });
+
+    await assert.rejects(
+      () => owner.recordAnswer(checkpointId, "wrong-question", idempotencyKey, "yes", "continue_within_approved_plan"),
+      /questionId does not match/,
+    );
+    await assert.rejects(
+      () => owner.recordAnswer(checkpointId, questionId, "wrong-idempotency-key", "yes", "continue_within_approved_plan"),
+      /idempotencyKey does not match/,
+    );
+    await assert.rejects(
+      () => owner.recordAnswer(checkpointId, questionId, idempotencyKey, "maybe", "continue_within_approved_plan"),
+      /answer must be one of the options/,
+    );
+    assert.equal(owner.getState().checkpoints.get(checkpointId)?.phase, "parked");
+
+    // Separate Barrier instances give each caller its own in-process queue;
+    // only the journal's cross-process mutex can serialize this race.
+    const contender = await Barrier.open(runDir, "run-answer-race");
+    try {
+      const outcomes = await Promise.allSettled([
+        owner.recordAnswer(checkpointId, questionId, idempotencyKey, "yes", "continue_within_approved_plan"),
+        contender.recordAnswer(checkpointId, questionId, idempotencyKey, "no", "continue_within_approved_plan"),
+      ]);
+      assert.equal(outcomes.filter((outcome) => outcome.status === "fulfilled").length, 1);
+      assert.equal(outcomes.filter((outcome) => outcome.status === "rejected").length, 1);
+      const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+      assert.ok(rejected && rejected.reason instanceof StaleAnswerError);
+      assert.equal((rejected as PromiseRejectedResult).reason.auditKind, "answer_late");
+      assert.equal((rejected as PromiseRejectedResult).reason.phase, "answered");
+    } finally {
+      await contender.close();
+    }
+
+    const { entries } = await Journal.read(runDir);
+    assert.equal(entries.filter((entry) => entry.kind === "answered").length, 1);
+    assert.equal(entries.filter((entry) => entry.kind === "answer_late").length, 1);
+    assert.equal(owner.getState().checkpoints.get(checkpointId)?.phase, "answered");
+    await owner.close();
   } finally {
     await killUnitsMatching("pros-");
     await cleanupDir(repo);
@@ -172,6 +245,50 @@ test("barrier: requestCheckpoint is idempotent -- a replayed ask_human call with
     await barrier.close();
   } finally {
     await killUnitsMatching("pros-");
+    await cleanupDir(repo);
+    await cleanupDir(runDir);
+  }
+});
+
+test("barrier: concurrent Gate 2 parks with one idempotency key create one checkpoint", async () => {
+  const repo = await makeTempRepo();
+  const runDir = await makeRunDir();
+  let first: Barrier | undefined;
+  let second: Barrier | undefined;
+  try {
+    first = await Barrier.open(runDir, "run-gate2-race");
+    second = await Barrier.open(runDir, "run-gate2-race");
+
+    const idempotencyKey = randomUUID();
+    const results = await Promise.all([
+      first.parkForGate2({
+        cwd: repo,
+        prompt: "review the draft PR",
+        options: ["reviewed"],
+        questionId: randomUUID(),
+        idempotencyKey,
+        prRef: { url: "https://github.com/example/repo/pull/7", number: 7, headSha: "abc123" },
+      }),
+      second.parkForGate2({
+        cwd: repo,
+        prompt: "review the draft PR",
+        options: ["reviewed"],
+        questionId: randomUUID(),
+        idempotencyKey,
+        prRef: { url: "https://github.com/example/repo/pull/7", number: 7, headSha: "abc123" },
+      }),
+    ]);
+
+    assert.equal(results[0]!.checkpointId, results[1]!.checkpointId);
+    const { entries } = await Journal.read(runDir);
+    assert.equal(entries.filter((entry) => entry.kind === "checkpoint_requested" && entry.idempotencyKey === idempotencyKey).length, 1);
+    assert.equal(entries.filter((entry) => entry.kind === "quiescing").length, 1);
+    assert.equal(entries.filter((entry) => entry.kind === "parked").length, 1);
+    assert.equal(first.getState().checkpoints.size, 1);
+    assert.equal(first.getState().checkpoints.get(results[0]!.checkpointId)?.phase, "parked");
+  } finally {
+    await second?.close();
+    await first?.close();
     await cleanupDir(repo);
     await cleanupDir(runDir);
   }

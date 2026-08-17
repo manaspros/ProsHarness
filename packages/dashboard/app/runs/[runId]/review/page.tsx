@@ -1,3 +1,4 @@
+import path from "node:path";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -18,6 +19,9 @@ import {
   type ReviewCompletedPayload,
   type PrCreatedPayload,
 } from "../../../../lib/review-data";
+import { loadRunState } from "@pros/barrier";
+import { getPlanOperationStatus } from "../../../../lib/review-data";
+import { gate2ReviewDecision, isGate2StoppedOperation, parkedGate2Checkpoint } from "../../../../lib/gate2";
 import type { ChecklistItem } from "@pros/review";
 import { SectionHeading } from "../../../../components/SectionHeading";
 import { Surface } from "../../../../components/Surface";
@@ -25,6 +29,7 @@ import { EmptyState } from "../../../../components/EmptyState";
 import { StatusPill } from "../../../../components/StatusPill";
 import { Alert } from "../../../../components/Alert";
 import { cn } from "../../../../lib/utils";
+import { Gate2AnswerForm } from "../../../../components/Gate2AnswerForm";
 
 export const dynamic = "force-dynamic";
 
@@ -41,17 +46,29 @@ export default async function ReviewPage({ params }: { params: Promise<{ runId: 
   const { runId } = await params;
   const runsRoot = getRunsRoot();
   const dbPath = getIndexDbPath();
+  const state = await loadRunState(path.join(runsRoot, runId)).catch(() => undefined);
 
   const { db } = await rebuildAndOpenIndex(dbPath, runsRoot);
-  let worktree, verdict, review, prCreated;
+  let worktree, verdict, review, prCreated, operation;
   try {
     worktree = getWorktreeInfo(db, runId);
     verdict = parseLatestEventOfKind<VerifyVerdictPayload>(db, runId, "verify_verdict");
     review = parseLatestEventOfKind<ReviewCompletedPayload>(db, runId, "review_completed");
     prCreated = parseLatestEventOfKind<PrCreatedPayload>(db, runId, "pr_created");
+    operation = getPlanOperationStatus(db, runId);
   } finally {
     db.close();
   }
+
+  const parkedGate2 = state ? parkedGate2Checkpoint(state) : undefined;
+  const gate2Checkpoint = state
+    ? [...state.checkpoints.values()].find((checkpoint) => checkpoint.gateType === "pr_review")
+    : undefined;
+  const gate2Decision = gate2ReviewDecision(gate2Checkpoint);
+  const gate2Stopped = isGate2StoppedOperation(operation);
+  const gate1Checkpoint = state
+    ? [...state.checkpoints.values()].find((checkpoint) => checkpoint.gateType === "plan_approval")
+    : undefined;
 
   const backLink = (
     <Link href="/pr-checks" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
@@ -65,13 +82,40 @@ export default async function ReviewPage({ params }: { params: Promise<{ runId: 
       <div className="space-y-6">
         {backLink}
         <SectionHeading title="PR check" description={<code>{runId}</code>} />
-        <Surface elevation="raised">
-          <EmptyState
-            icon={<GitBranch className="h-8 w-8" />}
-            title="No implementation yet"
-            description="Gate 2 hasn't started for this run -- no worktree or PR has been created yet."
-          />
-        </Surface>
+        {gate1Checkpoint?.phase === "answered" && gate1Checkpoint.effect === "abort" ? (
+          <Surface elevation="raised" className="border-status-fail/40 bg-status-fail/10 p-5">
+            <StatusPill status="fail" label="Gate 1 aborted" />
+            <p className="mt-3 text-sm text-muted-foreground">The plan was rejected; Gate 2 did not start.</p>
+          </Surface>
+        ) : gate1Checkpoint?.phase === "answered" && gate1Checkpoint.effect === "requires_plan_amendment" ? (
+          <Surface elevation="raised" className="border-status-blocked/40 bg-status-blocked/10 p-5">
+            <StatusPill status="blocked" label="Gate 1 amendment required" />
+            <p className="mt-3 text-sm text-muted-foreground">The amendment flow is unavailable; no implementation will start.</p>
+          </Surface>
+        ) : gate2Stopped ? (
+          <Surface elevation="raised" className="border-status-fail/40 bg-status-fail/10 p-5">
+            <StatusPill status="fail" label="Gate 2 stopped" />
+            <p className="mt-3 text-sm text-muted-foreground">{operation?.error}</p>
+          </Surface>
+        ) : operation?.operation === "implementation" && operation.state === "failed" ? (
+          <Surface elevation="raised" className="border-status-fail/40 bg-status-fail/10 p-5">
+            <StatusPill status="fail" label="Gate 2 failed" />
+            <p className="mt-3 text-sm text-muted-foreground">{operation.error ?? "Gate 2 failed before producing a PR"}</p>
+          </Surface>
+        ) : operation?.operation === "implementation" && operation.state === "running" ? (
+          <Surface elevation="raised" className="border-status-running/30 bg-status-running/10 p-5">
+            <StatusPill status="running" label="Gate 2 running" />
+            <p className="mt-3 text-sm text-muted-foreground">Implementation and review are still in progress.</p>
+          </Surface>
+        ) : (
+          <Surface elevation="raised">
+            <EmptyState
+              icon={<GitBranch className="h-8 w-8" />}
+              title="No implementation yet"
+              description="Gate 2 hasn't started for this run -- no worktree or PR has been created yet."
+            />
+          </Surface>
+        )}
       </div>
     );
   }
@@ -96,6 +140,19 @@ export default async function ReviewPage({ params }: { params: Promise<{ runId: 
           />
         </Surface>
 
+        {gate2Stopped && (
+          <Surface elevation="raised" className="border-status-fail/40 bg-status-fail/10 p-5">
+            <StatusPill status="fail" label="Gate 2 stopped" />
+            <p className="mt-3 text-sm text-muted-foreground">{operation?.error}</p>
+          </Surface>
+        )}
+        {!gate2Stopped && operation?.operation === "implementation" && operation.state === "failed" && (
+          <Surface elevation="raised" className="border-status-fail/40 bg-status-fail/10 p-5">
+            <StatusPill status="fail" label="Gate 2 failed" />
+            <p className="mt-3 text-sm text-muted-foreground">{operation.error ?? "Gate 2 failed before producing a PR"}</p>
+          </Surface>
+        )}
+
         {(verdict || review) && (
           <Surface elevation="raised" className="flex flex-wrap items-center gap-x-6 gap-y-2 p-5 text-sm">
             {verdict && (
@@ -107,7 +164,7 @@ export default async function ReviewPage({ params }: { params: Promise<{ runId: 
             )}
             {review && (
               <div className="flex items-center gap-2">
-                <span className="text-muted-foreground">Review:</span>
+                <span className="text-muted-foreground">Automated review:</span>
                 <StatusPill status={review.verdict === "approve" ? "pass" : "fail"} label={review.verdict} />
               </div>
             )}
@@ -210,12 +267,44 @@ export default async function ReviewPage({ params }: { params: Promise<{ runId: 
           )}
           {review && (
             <span className="inline-flex items-center gap-1.5 text-sm">
-              <span className="text-muted-foreground">Review:</span>
+              <span className="text-muted-foreground">Automated review:</span>
               <StatusPill status={review.verdict === "approve" ? "pass" : "fail"} label={review.verdict} />
             </span>
           )}
         </div>
       </Surface>
+
+      {parkedGate2 ? (
+        <Surface elevation="raised" className="border-status-parked/40 bg-status-parked/10 p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <StatusPill status="parked" label="Gate 2 awaiting review" />
+              <p className="mt-2 text-sm text-muted-foreground">{parkedGate2.prompt}</p>
+              <p className="mt-1 text-xs text-muted-foreground">Review the draft PR on GitHub, then record that review here.</p>
+            </div>
+            <Gate2AnswerForm
+              runId={runId}
+              checkpointId={parkedGate2.checkpointId}
+              redirectTo={`/pr-checks/${encodeURIComponent(runId)}`}
+            />
+          </div>
+        </Surface>
+      ) : gate2Decision === "reviewed" ? (
+        <Surface elevation="raised" className="border-status-pass/30 bg-status-pass/10 p-5">
+          <StatusPill status="pass" label="Gate 2 reviewed" />
+          <p className="mt-2 text-sm text-muted-foreground">The human Gate 2 review has been recorded.</p>
+        </Surface>
+      ) : gate2Decision === "invalid_answer" ? (
+        <Surface elevation="raised" className="border-status-fail/40 bg-status-fail/10 p-5">
+          <StatusPill status="fail" label="Gate 2 answer invalid" />
+          <p className="mt-2 text-sm text-muted-foreground">The recorded answer does not confirm that the PR was reviewed.</p>
+        </Surface>
+      ) : (
+        <Surface elevation="raised" className="border-status-parked/40 bg-status-parked/10 p-5">
+          <StatusPill status="parked" label="PR opened — review not recorded" />
+          <p className="mt-2 text-sm text-muted-foreground">The draft PR exists, but this system has not recorded a reviewed answer.</p>
+        </Surface>
+      )}
 
       {unresolvedBlockers.length > 0 && (
         <Alert variant="warning" title="Unresolved blocker(s) -- a human must look closely">
