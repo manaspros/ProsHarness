@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Barrier, Journal } from "@pros/barrier";
@@ -137,7 +138,21 @@ test("happy path: commit + pass verdict + clean review -> draft PR opens, parks 
   const runId = "run-happy-1";
   const repo = await makeRepoScenario(`pros/${runId}/attempt`);
   const { runsRoot, runDir } = await makeRunDir(runId);
+  let server: Server | undefined;
   try {
+    let resolveRequest: (() => void) | undefined;
+    const requestReceived = new Promise<void>((resolve) => {
+      resolveRequest = resolve;
+    });
+    server = createServer((_req, res) => {
+      resolveRequest?.();
+      res.writeHead(200);
+      res.end("ok");
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+
     const mainShaBefore = (await git(repo.bareRepoPath, ["rev-parse", "main"])).trim();
 
     const ghClient = new CountingGhClient(new LocalGhStub({ bareRepoPath: repo.bareRepoPath }));
@@ -156,7 +171,16 @@ test("happy path: commit + pass verdict + clean review -> draft PR opens, parks 
       verifierSession: new VerifierSession({ outcome: "pass", summary: "all checks pass", failingChecks: [] }),
       ghClient,
       ghCredential: CRED,
+      // If Gate 2 wires notifications implicitly, this local endpoint
+      // receives the request. It keeps the regression test fully offline.
+      ntfyUrl: `http://127.0.0.1:${address.port}/test-notification`,
     });
+
+    const notificationOutcome = await Promise.race([
+      requestReceived.then(() => "sent" as const),
+      new Promise<"not-sent">((resolve) => setTimeout(() => resolve("not-sent"), 100)),
+    ]);
+    assert.equal(notificationOutcome, "not-sent", "a library/test Gate 2 pipeline must not send without explicit opt-in");
 
     assert.ok(result.pr, "expected a draft PR to be opened");
     assert.ok(result.checkpointId, "expected a Gate 2 checkpointId");
@@ -179,6 +203,7 @@ test("happy path: commit + pass verdict + clean review -> draft PR opens, parks 
     const mainShaAfter = (await git(repo.bareRepoPath, ["rev-parse", "main"])).trim();
     assert.equal(mainShaAfter, mainShaBefore, "the pipeline must never merge -- main must be completely unchanged");
   } finally {
+    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
     await cleanupRepoScenario(repo);
     await rm(runsRoot, { recursive: true, force: true });
   }

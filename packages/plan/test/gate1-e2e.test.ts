@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, appendFile, rm, readFile, writeFile } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -84,6 +85,48 @@ function fakeSessions(): { claudeSession: ScriptedSession; codexSession: Scripte
   return { claudeSession, codexSession };
 }
 
+test("runPlanPipeline: notifications are opt-in so synthetic or library runs cannot send external messages", async () => {
+  const s = await makeScenario("run-e2e-notifications-opt-in-1");
+  let server: Server | undefined;
+  try {
+    let resolveRequest: (() => void) | undefined;
+    const requestReceived = new Promise<void>((resolve) => {
+      resolveRequest = resolve;
+    });
+    server = createServer((_req, res) => {
+      resolveRequest?.();
+      res.writeHead(200);
+      res.end("ok");
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+
+    const { claudeSession, codexSession } = fakeSessions();
+    await runPlanPipeline({
+      repoRoot: s.repoRoot,
+      worktreesRoot: s.worktreesRoot,
+      runsRoot: s.runsRoot,
+      description: "synthetic test run must not notify a real destination",
+      runId: s.runId,
+      claudeSession,
+      codexSession,
+      // If the pipeline wires notifications implicitly, this local endpoint
+      // receives the request. It keeps the regression test fully offline.
+      ntfyUrl: `http://127.0.0.1:${address.port}/test-notification`,
+    });
+
+    const outcome = await Promise.race([
+      requestReceived.then(() => "sent" as const),
+      new Promise<"not-sent">((resolve) => setTimeout(() => resolve("not-sent"), 100)),
+    ]);
+    assert.equal(outcome, "not-sent", "a library/test pipeline must not send notifications without explicit opt-in");
+  } finally {
+    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    await cleanupScenario(s);
+  }
+});
+
 test("Gate 1 parks the run after plan_finalized, with a notification fired (that a broken ntfy target cannot block)", async () => {
   const s = await makeScenario("run-e2e-park-1");
   try {
@@ -101,6 +144,7 @@ test("Gate 1 parks the run after plan_finalized, with a notification fired (that
       // immediately, but even a hanging target must not block the pipeline
       // (sendNtfy's own 5s default timeout would otherwise dominate).
       ntfyUrl: "http://127.0.0.1:1",
+      notificationsEnabled: true,
     });
     const elapsed = Date.now() - start;
 

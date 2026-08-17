@@ -33,6 +33,12 @@ export interface PlanPipelineOptions {
    * process.env.PROS_SLACK_NOTIFY_TARGET, mirroring ntfyUrl's own fallback.
    */
   slackTarget?: string;
+  /**
+   * External notifications are an entry-point policy, not an implicit side
+   * effect of this reusable pipeline. Library callers and tests are silent by
+   * default; the real CLI/dashboard/scheduler entry points opt in explicitly.
+   */
+  notificationsEnabled?: boolean;
   /** Retained for backwards-compatible callers; dashboard/CLI sessions always force this on. */
   dangerouslySkipPermissions?: boolean;
 }
@@ -171,12 +177,14 @@ export async function runPlanPipeline(opts: PlanPipelineOptions): Promise<PlanPi
   let checkpointId: string;
   let questionId: string;
   try {
-    // Fire-and-forget notification wiring: onParked's listener is a detached
-    // microtask (see Barrier.fireParked), so a hung/unreachable ntfy target
-    // can never delay or block parkForGate1 below -- proven in
+    // When enabled, fire-and-forget notification wiring: onParked's listener
+    // is a detached microtask (see Barrier.fireParked), so a hung/unreachable
+    // ntfy target can never delay or block parkForGate1 below -- proven in
     // packages/notify/test/barrier-integration.test.ts and re-proven against
     // the real pipeline in gate1-e2e.test.ts.
-    const unsubscribe = wireNtfyNotifications(barrier, { url: opts.ntfyUrl, slackTarget: opts.slackTarget });
+    const unsubscribe = opts.notificationsEnabled
+      ? wireNtfyNotifications(barrier, { url: opts.ntfyUrl, slackTarget: opts.slackTarget })
+      : () => undefined;
     try {
       const unresolvedCount = debate.unresolvedObjections.length;
       const totalCount = debate.allObjections.length;

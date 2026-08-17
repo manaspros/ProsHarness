@@ -51,7 +51,11 @@ export function parseImplementArgs(argv: string[], env: NodeJS.ProcessEnv = proc
  * every "not ready"/"already done" condition rather than silently
  * proceeding or silently no-oping.
  */
-export async function runImplementCommand(argv: string[], env: NodeJS.ProcessEnv = process.env): Promise<string> {
+export async function runImplementCommand(
+  argv: string[],
+  env: NodeJS.ProcessEnv = process.env,
+  opts: { notificationsEnabled?: boolean } = {},
+): Promise<string> {
   const args = parseImplementArgs(argv, env);
   const runDir = path.join(args.runsRoot, args.runId);
 
@@ -88,7 +92,7 @@ export async function runImplementCommand(argv: string[], env: NodeJS.ProcessEnv
       ntfyUrl: args.ntfyUrl,
     });
 
-    result = await runGate2Pipeline({ ...derived, reapWorktreeOnSuccess: true });
+    result = await runGate2Pipeline({ ...derived, reapWorktreeOnSuccess: true, notificationsEnabled: opts.notificationsEnabled ?? false });
     await recordGate2Operation({ runId: args.runId, runDir, requestedBy: "cli", transition: "completed", result });
   } catch (err) {
     await recordGate2Operation({

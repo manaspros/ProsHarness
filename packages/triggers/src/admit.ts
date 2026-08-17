@@ -59,6 +59,8 @@ export interface RealAdmitOptions {
   ntfyUrl?: string;
   /** Passed straight through to `runPlanPipeline({ slackTarget })` -- see that option's doc comment in @pros/plan. */
   slackTarget?: string;
+  /** Explicit entry-point policy: real scheduled trigger runs opt into notifications; tests do not. */
+  notificationsEnabled?: boolean;
 }
 
 export function createRealOnNewSignal(
@@ -79,6 +81,7 @@ export function createRealOnNewSignal(
       codexSession,
       ntfyUrl: opts.ntfyUrl,
       slackTarget: opts.slackTarget,
+      notificationsEnabled: opts.notificationsEnabled ?? false,
     });
   };
 }
