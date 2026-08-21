@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { spawnClaude, spawnCodex, buildHookSpawnExtraArgs, type ParsedEvent } from "@pros/adapters";
+import { spawnClaude, spawnCodex, buildHookSpawnExtraArgs, type ParsedEvent, type SpawnResult } from "@pros/adapters";
 import type { ModelRunOptions, ModelRunResult, ModelSession, ModelUsage } from "./model-session.js";
 
 /** Drain an adapter's async-iterable event stream to completion, keeping every event seen. */
@@ -17,11 +17,27 @@ async function collectEvents(events: AsyncIterable<ParsedEvent>): Promise<Parsed
   return out;
 }
 
+async function collectEventsAndAwaitLifecycle(spawned: SpawnResult): Promise<ParsedEvent[]> {
+  try {
+    return await collectEvents(spawned.events);
+  } finally {
+    // If event delivery fails (for example, a raw-log append fails), do not
+    // leave the real CLI behind while the attempt is already failing.
+    await Promise.allSettled([spawned.exitCode, spawned.stderr]);
+  }
+}
+
 async function prepareRawLog(rawLogPath: string | undefined, provider: "claude" | "codex"): Promise<void> {
   if (!rawLogPath) return;
   const attemptDir = path.dirname(rawLogPath);
   await mkdir(attemptDir, { recursive: true });
   await writeFile(path.join(attemptDir, "provider.txt"), `${provider}\n`, "utf8");
+}
+
+async function persistObservedVersion(rawLogPath: string | undefined, versionSeen: string): Promise<void> {
+  const version = versionSeen.trim();
+  if (!rawLogPath || !version) return;
+  await writeFile(path.join(path.dirname(rawLogPath), "cli_version.txt"), `${version}\n`, "utf8");
 }
 
 /**
@@ -74,7 +90,7 @@ export class RealClaudeSession implements ModelSession {
     extraArgs.push(...buildHookSpawnExtraArgs());
     await prepareRawLog(opts.rawLogPath, "claude");
 
-    const { events, exitCode, stderr } = spawnClaude({
+    const spawned = spawnClaude({
       cwd: opts.cwd,
       prompt: opts.prompt,
       resumeSessionId: opts.resumeSessionId,
@@ -89,43 +105,56 @@ export class RealClaudeSession implements ModelSession {
       dangerouslySkipPermissions: opts.permissionMode || opts.allowedTools ? undefined : true,
       permissionMode: opts.permissionMode,
       allowedTools: opts.allowedTools,
+      timeoutMs: opts.timeoutMs,
       extraArgs,
       rawLogPath: opts.rawLogPath,
       attemptId: opts.attemptId,
     });
 
-    const collected = await collectEvents(events);
-    const [exitCodeValue, stderrText] = await Promise.all([exitCode, stderr]);
+    try {
+      const collected = await collectEventsAndAwaitLifecycle(spawned);
+      const [exitCodeValue, stderrText] = await Promise.all([spawned.exitCode, spawned.stderr]);
 
-    // The terminal event for a Claude `-p` run is `type: "result"`; its
-    // `result` field carries the final assistant text (schema-constrained
-    // JSON when `--json-schema` was given), `session_id` is the resumable
-    // session id, and `usage` carries token counts -- field names confirmed
-    // against packages/adapters/test/fixtures/claude/claude-pong.ndjson.
-    const resultEvent = [...collected].reverse().find((e) => e.type === "result");
-    if (!resultEvent || resultEvent.parseStatus !== "ok" || !resultEvent.data) {
-      throw new Error(
-        `RealClaudeSession: no terminal "result" event found in claude output (attemptId=${opts.attemptId}); ` +
-          `exitCode=${exitCodeValue ?? "unknown"}; saw ${collected.length} events, ` +
-          `last type=${collected[collected.length - 1]?.type ?? "<none>"}` +
-          (stderrText.trim() ? `; stderr: ${stderrText.trim()}` : ""),
-      );
+      if (exitCodeValue !== 0) {
+        throw new Error(
+          `RealClaudeSession: Claude CLI exited unsuccessfully (attemptId=${opts.attemptId}, exitCode=${exitCodeValue ?? "unknown"})` +
+            (stderrText.trim() ? `; stderr: ${stderrText.trim()}` : ""),
+        );
+      }
+
+      // The terminal event for a Claude `-p` run is `type: "result"`; its
+      // `result` field carries the final assistant text (schema-constrained
+      // JSON when `--json-schema` was given), `session_id` is the resumable
+      // session id, and `usage` carries token counts -- field names confirmed
+      // against packages/adapters/test/fixtures/claude/claude-pong.ndjson.
+      const resultEvent = [...collected].reverse().find((e) => e.type === "result");
+      if (!resultEvent || resultEvent.parseStatus !== "ok" || !resultEvent.data) {
+        throw new Error(
+          `RealClaudeSession: no terminal "result" event found in claude output (attemptId=${opts.attemptId}); ` +
+            `exitCode=${exitCodeValue ?? "unknown"}; saw ${collected.length} events, ` +
+            `last type=${collected[collected.length - 1]?.type ?? "<none>"}` +
+            (stderrText.trim() ? `; stderr: ${stderrText.trim()}` : ""),
+        );
+      }
+      const data = resultEvent.data as Record<string, unknown>;
+      if (data.is_error === true) {
+        const reason = typeof data.result === "string" && data.result.trim() ? data.result.trim() : JSON.stringify(data);
+        throw new Error(`RealClaudeSession: Claude reported a failed turn (attemptId=${opts.attemptId}): ${reason}`);
+      }
+      const usageRaw = (data.usage as Record<string, unknown> | undefined) ?? {};
+      const usage: ModelUsage = {
+        inputTokens: Number(usageRaw.input_tokens ?? 0),
+        outputTokens: Number(usageRaw.output_tokens ?? 0),
+      };
+      return {
+        text: String(data.result ?? ""),
+        sessionId: typeof data.session_id === "string" ? data.session_id : undefined,
+        usage,
+      };
+    } finally {
+      const observedVersion = (await spawned.versionSeen?.catch(() => "")) ?? "";
+      await persistObservedVersion(opts.rawLogPath, observedVersion);
     }
-    const data = resultEvent.data as Record<string, unknown>;
-    if (data.is_error === true) {
-      const reason = typeof data.result === "string" && data.result.trim() ? data.result.trim() : JSON.stringify(data);
-      throw new Error(`RealClaudeSession: Claude reported a failed turn (attemptId=${opts.attemptId}): ${reason}`);
-    }
-    const usageRaw = (data.usage as Record<string, unknown> | undefined) ?? {};
-    const usage: ModelUsage = {
-      inputTokens: Number(usageRaw.input_tokens ?? 0),
-      outputTokens: Number(usageRaw.output_tokens ?? 0),
-    };
-    return {
-      text: String(data.result ?? ""),
-      sessionId: typeof data.session_id === "string" ? data.session_id : undefined,
-      usage,
-    };
   }
 }
 
@@ -145,67 +174,80 @@ export class RealCodexSession implements ModelSession {
 
     try {
       await prepareRawLog(opts.rawLogPath, "codex");
-      const { events, exitCode, stderr } = spawnCodex({
+      const spawned = spawnCodex({
         cwd: opts.cwd,
         prompt: opts.prompt,
         resumeSessionId: opts.resumeSessionId,
         // Automated Codex assessment/review is also unattended. This keeps
         // it from failing solely because it cannot ask the user for approval.
         dangerouslySkipPermissions: true,
+        timeoutMs: opts.timeoutMs,
         extraArgs,
         rawLogPath: opts.rawLogPath,
         attemptId: opts.attemptId,
       });
 
-      const collected = await collectEvents(events);
-      const [exitCodeValue, stderrText] = await Promise.all([exitCode, stderr]);
+      try {
+        const collected = await collectEventsAndAwaitLifecycle(spawned);
+        const [exitCodeValue, stderrText] = await Promise.all([spawned.exitCode, spawned.stderr]);
 
-      // The final agent text arrives in an `item.completed` event whose
-      // `item.type === "agent_message"`; usage arrives separately in the
-      // terminal `turn.completed` event. Confirmed against
-      // packages/adapters/test/fixtures/codex/codex-pong.ndjson.
-      const messageEvent = [...collected]
-        .reverse()
-        .find((e) => e.type === "item.completed" && (e.data as any)?.item?.type === "agent_message");
-      const turnCompleted = [...collected].reverse().find((e) => e.type === "turn.completed");
-      const turnFailed = [...collected].reverse().find((e) => e.type === "turn.failed");
+        if (exitCodeValue !== 0) {
+          throw new Error(
+            `RealCodexSession: Codex CLI exited unsuccessfully (attemptId=${opts.attemptId}, exitCode=${exitCodeValue ?? "unknown"})` +
+              (stderrText.trim() ? `; stderr: ${stderrText.trim()}` : ""),
+          );
+        }
 
-      if (turnFailed) {
-        const failedData = turnFailed.data as Record<string, unknown> | undefined;
-        const failure = failedData?.error ?? failedData?.message ?? failedData?.reason ?? failedData;
-        const detail = typeof failure === "string" ? failure : JSON.stringify(failure ?? turnFailed.raw);
-        throw new Error(
-          `RealCodexSession: Codex turn failed (attemptId=${opts.attemptId}, exitCode=${exitCodeValue ?? "unknown"}): ` +
-            `${detail}` +
-            (stderrText.trim() ? `; stderr: ${stderrText.trim()}` : ""),
-        );
+        // The final agent text arrives in an `item.completed` event whose
+        // `item.type === "agent_message"`; usage arrives separately in the
+        // terminal `turn.completed` event. Confirmed against
+        // packages/adapters/test/fixtures/codex/codex-pong.ndjson.
+        const messageEvent = [...collected]
+          .reverse()
+          .find((e) => e.type === "item.completed" && (e.data as any)?.item?.type === "agent_message");
+        const turnCompleted = [...collected].reverse().find((e) => e.type === "turn.completed");
+        const turnFailed = [...collected].reverse().find((e) => e.type === "turn.failed");
+
+        if (turnFailed) {
+          const failedData = turnFailed.data as Record<string, unknown> | undefined;
+          const failure = failedData?.error ?? failedData?.message ?? failedData?.reason ?? failedData;
+          const detail = typeof failure === "string" ? failure : JSON.stringify(failure ?? turnFailed.raw);
+          throw new Error(
+            `RealCodexSession: Codex turn failed (attemptId=${opts.attemptId}, exitCode=${exitCodeValue ?? "unknown"}): ` +
+              `${detail}` +
+              (stderrText.trim() ? `; stderr: ${stderrText.trim()}` : ""),
+          );
+        }
+
+        if (!messageEvent || messageEvent.parseStatus !== "ok") {
+          throw new Error(
+            `RealCodexSession: no "item.completed" agent_message event found in codex output (attemptId=${opts.attemptId}); ` +
+              `exitCode=${exitCodeValue ?? "unknown"}; saw ${collected.length} events, ` +
+              `last type=${collected[collected.length - 1]?.type ?? "<none>"}` +
+              (stderrText.trim() ? `; stderr: ${stderrText.trim()}` : ""),
+          );
+        }
+        const text = String((messageEvent.data as any).item.text ?? "");
+
+        let usage: ModelUsage = { inputTokens: 0, outputTokens: 0 };
+        let threadId: string | undefined;
+        if (turnCompleted?.parseStatus === "ok") {
+          const usageRaw = (turnCompleted.data as any).usage ?? {};
+          usage = {
+            inputTokens: Number(usageRaw.input_tokens ?? 0),
+            outputTokens: Number(usageRaw.output_tokens ?? 0),
+          };
+        }
+        const threadStarted = collected.find((e) => e.type === "thread.started");
+        if (threadStarted?.parseStatus === "ok") {
+          threadId = (threadStarted.data as any).thread_id;
+        }
+
+        return { text, sessionId: threadId, usage };
+      } finally {
+        const observedVersion = (await spawned.versionSeen?.catch(() => "")) ?? "";
+        await persistObservedVersion(opts.rawLogPath, observedVersion);
       }
-
-      if (!messageEvent || messageEvent.parseStatus !== "ok") {
-        throw new Error(
-          `RealCodexSession: no "item.completed" agent_message event found in codex output (attemptId=${opts.attemptId}); ` +
-            `exitCode=${exitCodeValue ?? "unknown"}; saw ${collected.length} events, ` +
-            `last type=${collected[collected.length - 1]?.type ?? "<none>"}` +
-            (stderrText.trim() ? `; stderr: ${stderrText.trim()}` : ""),
-        );
-      }
-      const text = String((messageEvent.data as any).item.text ?? "");
-
-      let usage: ModelUsage = { inputTokens: 0, outputTokens: 0 };
-      let threadId: string | undefined;
-      if (turnCompleted?.parseStatus === "ok") {
-        const usageRaw = (turnCompleted.data as any).usage ?? {};
-        usage = {
-          inputTokens: Number(usageRaw.input_tokens ?? 0),
-          outputTokens: Number(usageRaw.output_tokens ?? 0),
-        };
-      }
-      const threadStarted = collected.find((e) => e.type === "thread.started");
-      if (threadStarted?.parseStatus === "ok") {
-        threadId = (threadStarted.data as any).thread_id;
-      }
-
-      return { text, sessionId: threadId, usage };
     } finally {
       if (schemaTmpDir) await rm(schemaTmpDir, { recursive: true, force: true }).catch(() => undefined);
     }

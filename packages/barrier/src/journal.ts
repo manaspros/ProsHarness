@@ -8,6 +8,17 @@ export type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omi
 export type JournalEntryInput = DistributiveOmit<JournalEntry, "seq" | "ts">;
 
 /**
+ * The callback passed to `Journal.transaction` runs while the journal's
+ * cross-process writer lock is held. Its `entries` snapshot is therefore a
+ * fresh replay of the durable journal, and `append` assigns the next sequence
+ * number without allowing another writer to interleave.
+ */
+export interface JournalTransaction {
+  entries: JournalEntry[];
+  append(entry: JournalEntryInput): Promise<JournalEntry>;
+}
+
+/**
  * One serialized writer per run journal.
  *
  * Record format on disk (repeated):
@@ -90,9 +101,50 @@ export class Journal {
 
   /** Append one entry. Resolves only after fsync(file) and fsync(directory). */
   async append(entry: JournalEntryInput): Promise<JournalEntry> {
-    const task = this.writeQueue.then(() => this.writeOne(entry));
-    // Chain regardless of success so one failure doesn't wedge the serialized writer
-    // for entries queued after it, but the caller of the failing append still throws.
+    return this.enqueue(() =>
+      withCrossProcessLock(this.dirPath, async () => {
+        // The next seq number must be read fresh from disk, under the lock,
+        // not cached in this instance -- another process may have appended
+        // since this Journal object was constructed or last wrote.
+        const existing = await Journal.readRaw(this.filePath);
+        const nextSeq = existing.entries.length > 0 ? existing.entries[existing.entries.length - 1]!.seq + 1 : 0;
+        return this.appendOne(entry, nextSeq);
+      }),
+    );
+  }
+
+  /**
+   * Run one or more related decisions under the same writer mutex. This is
+   * intentionally additive to `append`: callers that only need an append keep
+   * the original API, while state-machine transitions that must compare and
+   * append atomically can use the fresh snapshot supplied here.
+   */
+  async transaction<T>(fn: (tx: JournalTransaction) => Promise<T>): Promise<T> {
+    return this.enqueue(() =>
+      withCrossProcessLock(this.dirPath, async () => {
+        const existing = await Journal.readRaw(this.filePath);
+        const entries = existing.entries;
+        let nextSeq = entries.length > 0 ? entries[entries.length - 1]!.seq + 1 : 0;
+
+        const tx: JournalTransaction = {
+          entries,
+          append: async (entry) => {
+            const full = await this.appendOne(entry, nextSeq);
+            nextSeq = full.seq + 1;
+            entries.push(full);
+            return full;
+          },
+        };
+        return fn(tx);
+      }),
+    );
+  }
+
+  private enqueue<T>(work: () => Promise<T>): Promise<T> {
+    const task = this.writeQueue.then(work);
+    // Chain regardless of success so one failure doesn't wedge the serialized
+    // writer for entries queued after it, but the caller of the failing append
+    // still throws.
     this.writeQueue = task.then(
       () => undefined,
       () => undefined,
@@ -100,37 +152,29 @@ export class Journal {
     return task;
   }
 
-  private async writeOne(entry: JournalEntryInput): Promise<JournalEntry> {
+  private async appendOne(entry: JournalEntryInput, nextSeq: number): Promise<JournalEntry> {
     if (this.injectFailureOnce) {
       this.injectFailureOnce = false;
       throw Object.assign(new Error("simulated IO error (ENOSPC)"), { code: "ENOSPC" });
     }
 
-    return withCrossProcessLock(this.dirPath, async () => {
-      // The next seq number must be read fresh from disk, under the lock,
-      // not cached in this instance -- another process may have appended
-      // since this Journal object was constructed or last wrote.
-      const existing = await Journal.readRaw(this.filePath);
-      const nextSeq = existing.entries.length > 0 ? existing.entries[existing.entries.length - 1]!.seq + 1 : 0;
+    const full: JournalEntry = { ...entry, seq: nextSeq, ts: new Date().toISOString() } as JournalEntry;
+    const payload = Buffer.from(JSON.stringify(full), "utf8");
+    const len = Buffer.alloc(LEN_BYTES);
+    len.writeBigUInt64BE(BigInt(payload.length));
+    const sum = checksum(payload);
+    const record = Buffer.concat([len, payload, sum]);
 
-      const full: JournalEntry = { ...entry, seq: nextSeq, ts: new Date().toISOString() } as JournalEntry;
-      const payload = Buffer.from(JSON.stringify(full), "utf8");
-      const len = Buffer.alloc(LEN_BYTES);
-      len.writeBigUInt64BE(BigInt(payload.length));
-      const sum = checksum(payload);
-      const record = Buffer.concat([len, payload, sum]);
+    const handle = await open(this.filePath, "a");
+    try {
+      await handle.appendFile(record);
+      await handle.sync(); // fsync the file
+    } finally {
+      await handle.close();
+    }
+    await Journal.fsyncDir(this.dirPath); // fsync the containing directory (rename/append durability)
 
-      const handle = await open(this.filePath, "a");
-      try {
-        await handle.appendFile(record);
-        await handle.sync(); // fsync the file
-      } finally {
-        await handle.close();
-      }
-      await Journal.fsyncDir(this.dirPath); // fsync the containing directory (rename/append durability)
-
-      return full;
-    });
+    return full;
   }
 
   async close(): Promise<void> {

@@ -40,9 +40,9 @@
  * priority when picking ONE bucket per run -- mirrors deriveRunStatus's own
  * "parked checks first" priority discipline:
  *
- *   1. shipped        -- has pr_created AND the pr_review checkpoint (if
- *                         any) is no longer parked (human has answered
- *                         "reviewed"). See "On 'merged' vs honesty" below --
+ *   1. shipped        -- has pr_created AND the pr_review checkpoint records
+ *                         the exact human answer "reviewed" with the
+ *                         continue effect. See "On 'merged' vs honesty" below --
  *                         this column is deliberately NOT labelled "merged".
  *   2. awaiting_gate2  -- has pr_created AND its pr_review checkpoint is
  *                         still parked: draft PR is open, waiting on the
@@ -104,6 +104,7 @@ import type Database from "better-sqlite3";
 import type { RunState } from "@pros/barrier";
 import type { PlanRow, ObjectionRow } from "@pros/index";
 import { resolveCurrentPlan } from "./plan-doc.js";
+import { gate2ReviewDecision } from "./gate2.js";
 
 export type BoardStage =
   | "finding"
@@ -154,8 +155,7 @@ export function deriveBoardStage(inputs: BoardStageInputs): BoardStage {
   const prReviewCp = [...state.checkpoints.values()].find((cp) => cp.gateType === "pr_review");
 
   if (hasPrCreated) {
-    if (prReviewCp && prReviewCp.phase === "parked") return "awaiting_gate2";
-    return "shipped";
+    return gate2ReviewDecision(prReviewCp) === "reviewed" ? "shipped" : "awaiting_gate2";
   }
 
   if (hasVerifyVerdict && !hasReviewCompleted) return "verifying";

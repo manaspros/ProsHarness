@@ -7,7 +7,13 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { runPlanPipeline, type ModelSession, type ModelRunOptions, type ModelRunResult } from "@pros/plan";
 import { Journal } from "@pros/barrier";
-import { deriveGate2OptionsFromRun, isGate2AlreadyStarted } from "../src/from-run.js";
+import {
+  claimGate2,
+  deriveGate2OptionsFromRun,
+  Gate2AlreadyStartedError,
+  isGate2AlreadyStarted,
+} from "../src/from-run.js";
+import { InvalidFileAllowlistError } from "../src/implement.js";
 import { buildPrContent } from "../src/pipeline.js";
 import { runVerification, type Verdict } from "../src/verify.js";
 import { REPO_ROOT } from "./helpers.js";
@@ -180,7 +186,7 @@ test("deriveGate2OptionsFromRun: missing plan_finalized -> throws a clear error"
   }
 });
 
-test("deriveGate2OptionsFromRun: fileAllowlist falls back to [] when structured/filesTouched is missing or malformed", async () => {
+test("deriveGate2OptionsFromRun: missing filesTouched refuses Gate 2 instead of deriving an unrestricted scope", async () => {
   const worktreesRoot = await mkdtemp(path.join(tmpdir(), "pros-fromrun-wt2-"));
   const runsRoot = await mkdtemp(path.join(tmpdir(), "pros-fromrun-runs2-"));
   const runId = "from-run-no-allowlist";
@@ -198,8 +204,14 @@ test("deriveGate2OptionsFromRun: fileAllowlist falls back to [] when structured/
     seedRepoRoot = seeded.seedRepoRoot;
     bareRepoPath = seeded.bareRepoPath;
 
-    const opts = await deriveGate2OptionsFromRun({ runsRoot, runId, repoRoot: REPO_ROOT });
-    assert.deepEqual(opts.fileAllowlist, []);
+    await assert.rejects(
+      () => deriveGate2OptionsFromRun({ runsRoot, runId, repoRoot: REPO_ROOT }),
+      (err: unknown) => {
+        assert.ok(err instanceof InvalidFileAllowlistError);
+        assert.match((err as Error).message, /invalid file allowlist/);
+        return true;
+      },
+    );
   } finally {
     await rm(worktreesRoot, { recursive: true, force: true }).catch(() => undefined);
     await rm(runsRoot, { recursive: true, force: true }).catch(() => undefined);
@@ -328,5 +340,66 @@ test("deriveGate2OptionsFromRun: a non-conforming planClaim (single word, no ver
     await rm(runsRoot, { recursive: true, force: true }).catch(() => undefined);
     if (seedRepoRoot) await rm(seedRepoRoot, { recursive: true, force: true }).catch(() => undefined);
     if (bareRepoPath) await rm(bareRepoPath, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("claimGate2 serializes concurrent Gate 2 starts and leaves a durable fail-closed claim", async () => {
+  const runsRoot = await mkdtemp(path.join(tmpdir(), "pros-fromrun-claim-"));
+  const runId = "from-run-claim-race";
+  const runDir = path.join(runsRoot, runId);
+
+  try {
+    const outcomes = await Promise.allSettled([claimGate2(runDir, runId), claimGate2(runDir, runId)]);
+    assert.equal(outcomes.filter((outcome) => outcome.status === "fulfilled").length, 1);
+    const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+    assert.ok(rejected && rejected.status === "rejected");
+    assert.ok(rejected.reason instanceof Gate2AlreadyStartedError);
+    assert.equal(await isGate2AlreadyStarted(runDir), true);
+
+    const { entries } = await Journal.read(runDir);
+    const claims = (entries as unknown as Array<Record<string, unknown>>).filter((entry) => entry.kind === "gate2_claimed");
+    assert.equal(claims.length, 1);
+    assert.equal(claims[0]?.runId, runId);
+  } finally {
+    await rm(runsRoot, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("claimGate2 allows a retry after a durably failed attempt, but blocks another concurrent retry", async () => {
+  const runsRoot = await mkdtemp(path.join(tmpdir(), "pros-fromrun-claim-retry-"));
+  const runId = "from-run-claim-retry";
+  const runDir = path.join(runsRoot, runId);
+
+  try {
+    await claimGate2(runDir, runId);
+
+    // This is the result written by runGate2Pipeline before it returns its
+    // aborted verification result. It makes the pre-model claim stale without
+    // introducing a second claim/release protocol.
+    const journal = await Journal.open(runDir);
+    await journal.append({
+      runId,
+      fenceEpoch: 0,
+      kind: "verify_verdict",
+      outcome: "fail",
+      summary: "verification failed",
+      failingChecksJson: JSON.stringify(["test"]),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    await journal.close();
+
+    assert.equal(await isGate2AlreadyStarted(runDir), false);
+    await claimGate2(runDir, runId);
+    assert.equal(await isGate2AlreadyStarted(runDir), true);
+
+    const outcomes = await Promise.allSettled([claimGate2(runDir, runId), claimGate2(runDir, runId)]);
+    assert.equal(outcomes.filter((outcome) => outcome.status === "fulfilled").length, 0);
+    assert.equal(outcomes.filter((outcome) => outcome.status === "rejected").length, 2);
+
+    const { entries } = await Journal.read(runDir);
+    const claims = (entries as unknown as Array<Record<string, unknown>>).filter((entry) => entry.kind === "gate2_claimed");
+    assert.equal(claims.length, 2);
+  } finally {
+    await rm(runsRoot, { recursive: true, force: true }).catch(() => undefined);
   }
 });

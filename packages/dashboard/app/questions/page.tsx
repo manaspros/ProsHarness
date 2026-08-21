@@ -11,13 +11,14 @@ import { StatusPill } from "../../components/StatusPill";
 import { Alert } from "../../components/Alert";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
+import { Gate2AnswerForm } from "../../components/Gate2AnswerForm";
 
 export const dynamic = "force-dynamic";
 
 const selectClass =
   "flex h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";
 
-/** Workspace-level inbox for parked ask_human checkpoints. */
+/** Workspace-level inbox for parked human checkpoints, including Gate 2 PR reviews. */
 export default async function QuestionsInboxPage({
   searchParams,
 }: {
@@ -27,7 +28,7 @@ export default async function QuestionsInboxPage({
   const runs = await listRuns(getRunsRoot());
   const questions = runs.flatMap((run) =>
     [...run.state.checkpoints.values()]
-      .filter((cp) => (cp.gateType ?? "ask_human") === "ask_human" && cp.phase === "parked")
+      .filter((cp) => ((cp.gateType ?? "ask_human") === "ask_human" || cp.gateType === "pr_review") && cp.phase === "parked")
       .map((checkpoint) => ({ runId: run.runId, checkpoint })),
   );
 
@@ -60,6 +61,11 @@ export default async function QuestionsInboxPage({
                 <StatusPill status="parked" label="Needs answer" />
               </div>
               <p className="text-sm font-medium text-foreground">{checkpoint.prompt}</p>
+              {checkpoint.gateType === "pr_review" && checkpoint.prRef && (
+                <a href={checkpoint.prRef.url} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">
+                  Open draft PR #{checkpoint.prRef.number} →
+                </a>
+              )}
               <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                 <span>
                   Options: {checkpoint.options.length > 0 ? checkpoint.options.join(", ") : "(none -- free text only)"}
@@ -68,39 +74,49 @@ export default async function QuestionsInboxPage({
                   Open session questions →
                 </Link>
               </div>
-              <form
-                action={`/api/runs/${encodeURIComponent(runId)}/checkpoints/${encodeURIComponent(checkpoint.checkpointId)}/answer`}
-                method="post"
-                className="space-y-3 border-t border-border pt-3"
-              >
-                <input type="hidden" name="redirectTo" value="/questions" />
-                <div className="flex flex-wrap items-center gap-2">
-                  {checkpoint.options.length > 0 ? (
-                    <select name="answer" defaultValue={checkpoint.options[0]} className={selectClass}>
-                      {checkpoint.options.map((option) => (
-                        <option key={option} value={option}>
-                          {option}
+              {checkpoint.gateType === "pr_review" ? (
+                <div className="border-t border-border pt-3">
+                  <Gate2AnswerForm
+                    runId={runId}
+                    checkpointId={checkpoint.checkpointId}
+                    redirectTo="/questions"
+                  />
+                </div>
+              ) : (
+                <form
+                  action={`/api/runs/${encodeURIComponent(runId)}/checkpoints/${encodeURIComponent(checkpoint.checkpointId)}/answer`}
+                  method="post"
+                  className="space-y-3 border-t border-border pt-3"
+                >
+                  <input type="hidden" name="redirectTo" value="/questions" />
+                  <div className="flex flex-wrap items-center gap-2">
+                    {checkpoint.options.length > 0 ? (
+                      <select name="answer" defaultValue={checkpoint.options[0]} className={selectClass}>
+                        {checkpoint.options.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    ) : null}
+                    <span className="text-sm text-muted-foreground">or free text:</span>
+                    <Input type="text" name="answerFreeText" placeholder="Type an answer" className="max-w-sm" />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-muted-foreground">Effect:</span>
+                    <select name="effect" defaultValue={DEFAULT_ANSWER_EFFECT} className={selectClass}>
+                      {ANSWER_EFFECTS.map((effect) => (
+                        <option key={effect} value={effect}>
+                          {effect}
                         </option>
                       ))}
                     </select>
-                  ) : null}
-                  <span className="text-sm text-muted-foreground">or free text:</span>
-                  <Input type="text" name="answerFreeText" placeholder="Type an answer" className="max-w-sm" />
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-muted-foreground">Effect:</span>
-                  <select name="effect" defaultValue={DEFAULT_ANSWER_EFFECT} className={selectClass}>
-                    {ANSWER_EFFECTS.map((effect) => (
-                      <option key={effect} value={effect}>
-                        {effect}
-                      </option>
-                    ))}
-                  </select>
-                  <Button type="submit" size="sm">
-                    Submit answer
-                  </Button>
-                </div>
-              </form>
+                    <Button type="submit" size="sm">
+                      Submit answer
+                    </Button>
+                  </div>
+                </form>
+              )}
             </Surface>
           ))}
         </div>

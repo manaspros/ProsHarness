@@ -13,6 +13,7 @@ import path from "node:path";
 import { loadRunState } from "@pros/barrier";
 import { TokenCeiling } from "@pros/lease";
 import { deriveGate2OptionsFromRun, isGate2AlreadyStarted, notificationsEnabledFromEnv, runGate2Pipeline } from "@pros/implement";
+import { recordGate2Operation } from "./gate2-operation.js";
 
 export interface ImplementArgs {
   runId: string;
@@ -78,25 +79,39 @@ export async function runImplementCommand(
     throw new Error(`pros implement: Gate 2 has already been started or completed for run ${args.runId} -- refusing to double-run`);
   }
 
-  const derived = await deriveGate2OptionsFromRun({
-    runsRoot: args.runsRoot,
-    runId: args.runId,
-    repoRoot: args.repoRoot,
-    leaseDir: args.leaseDir,
-    maxConcurrent: args.maxConcurrent,
-    tokenCeiling: new TokenCeiling({ maxTotalTokens: args.maxTokensPerRun }),
-    ntfyUrl: args.ntfyUrl,
-  });
+  await recordGate2Operation({ runId: args.runId, runDir, requestedBy: "cli", transition: "started" });
+  let result;
+  try {
+    const derived = await deriveGate2OptionsFromRun({
+      runsRoot: args.runsRoot,
+      runId: args.runId,
+      repoRoot: args.repoRoot,
+      leaseDir: args.leaseDir,
+      maxConcurrent: args.maxConcurrent,
+      tokenCeiling: new TokenCeiling({ maxTotalTokens: args.maxTokensPerRun }),
+      ntfyUrl: args.ntfyUrl,
+    });
 
-  const result = await runGate2Pipeline({
-    ...derived,
-    reapWorktreeOnSuccess: true,
-    // B8: was hardcoded `?? false`. `opts.notificationsEnabled` remains an
-    // explicit override seam for tests/library callers; the real CLI entry
-    // point (main.ts) doesn't pass one, so it now defers to
-    // PROS_NOTIFICATIONS_ENABLED instead of being permanently silent.
-    notificationsEnabled: opts.notificationsEnabled ?? notificationsEnabledFromEnv(env),
-  });
+    result = await runGate2Pipeline({
+      ...derived,
+      reapWorktreeOnSuccess: true,
+      // B8: was hardcoded `?? false`. `opts.notificationsEnabled` remains an
+      // explicit override seam for tests/library callers; the real CLI entry
+      // point (main.ts) doesn't pass one, so it now defers to
+      // PROS_NOTIFICATIONS_ENABLED instead of being permanently silent.
+      notificationsEnabled: opts.notificationsEnabled ?? notificationsEnabledFromEnv(env),
+    });
+    await recordGate2Operation({ runId: args.runId, runDir, requestedBy: "cli", transition: "completed", result });
+  } catch (err) {
+    await recordGate2Operation({
+      runId: args.runId,
+      runDir,
+      requestedBy: "cli",
+      transition: "failed",
+      error: err instanceof Error ? err.message : String(err),
+    }).catch(() => undefined);
+    throw err;
+  }
 
   if (result.pr) {
     return `pros implement ${args.runId}: draft PR opened at ${result.pr.url} (verify=${result.verdict.outcome}, review=${result.review.verdict})`;

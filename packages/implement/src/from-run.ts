@@ -42,10 +42,8 @@
  * debate loop; see packages/plan/src/debate.ts) -- and parse its
  * `structuredJson` for a well-formed `.filesTouched: string[]`. If that
  * entry is missing, or `structuredJson` doesn't parse, or `filesTouched`
- * isn't a string array, this falls back to an EMPTY allowlist. That is not
- * a new invented behavior: `packages/implement/src/implement.ts` already
- * treats an empty `fileAllowlist` as "no restriction" (see its own doc
- * comments), so this fallback is exactly that existing, safe behavior.
+ * isn't a usable non-empty string array, Gate 2 is refused. Treating a
+ * missing/malformed scope as unrestricted would be fail-open.
  *
  * `planClaim` / `planDiagram`: the SAME `structuredJson` blob as
  * `fileAllowlist` above, read for its `.claim`/`.diagram` string fields
@@ -63,9 +61,11 @@
  */
 
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { Journal, loadRunState, git } from "@pros/barrier";
 import type { TokenCeiling } from "@pros/lease";
+import { assertImplementationScope, InvalidFileAllowlistError } from "./implement.js";
 import type { Gate2PipelineOptions } from "./pipeline.js";
 
 export interface DeriveGate2OptionsInput {
@@ -157,38 +157,40 @@ export async function deriveGate2OptionsFromRun(opts: DeriveGate2OptionsInput): 
         )
   ) as { structuredJson: string } | undefined;
 
-  let fileAllowlist: string[] = [];
+  if (!planContentEntry) {
+    throw new InvalidFileAllowlistError(
+      undefined,
+      "the approved plan has no matching structured filesTouched allowlist",
+    );
+  }
+
   // `claim`/`diagram` (Phase 5a, packages/plan/src/plan.ts's structured plan
   // schema) are read from the SAME structuredJson blob as fileAllowlist --
   // this is the journal's own durable record of the finalized plan, not a
   // re-parse of plan.md and not a read through @pros/index's rebuildable
   // SQLite projection (that projection exists for dashboard display, not for
   // reconstructing pipeline inputs). Both stay undefined -- never a
-  // synthesized placeholder -- when the entry predates this schema, is
-  // malformed, or the field is blank; `Gate2PipelineOptions.planClaim`/
-  // `planDiagram` are documented to degrade gracefully on exactly that.
+  // synthesized placeholder -- when the field is blank or absent.
+  let fileAllowlist: unknown;
   let planClaim: string | undefined;
   let planDiagram: string | undefined;
-  if (planContentEntry) {
-    try {
-      const structured = JSON.parse(planContentEntry.structuredJson) as {
-        filesTouched?: unknown;
-        claim?: unknown;
-        diagram?: unknown;
-      };
-      if (Array.isArray(structured.filesTouched) && structured.filesTouched.every((f) => typeof f === "string")) {
-        fileAllowlist = structured.filesTouched as string[];
-      }
-      if (typeof structured.claim === "string" && structured.claim.trim().length > 0) {
-        planClaim = structured.claim;
-      }
-      if (typeof structured.diagram === "string" && structured.diagram.trim().length > 0) {
-        planDiagram = structured.diagram;
-      }
-    } catch {
-      // Malformed structuredJson -- fall back to the empty allowlist below.
+  try {
+    const structured = JSON.parse(planContentEntry.structuredJson) as {
+      filesTouched?: unknown;
+      claim?: unknown;
+      diagram?: unknown;
+    };
+    fileAllowlist = structured.filesTouched;
+    if (typeof structured.claim === "string" && structured.claim.trim().length > 0) {
+      planClaim = structured.claim;
     }
+    if (typeof structured.diagram === "string" && structured.diagram.trim().length > 0) {
+      planDiagram = structured.diagram;
+    }
+  } catch {
+    throw new InvalidFileAllowlistError(undefined, "the approved plan structuredJson is malformed");
   }
+  assertImplementationScope(fileAllowlist);
 
   const planMarkdown = await readFile(path.join(runDir, "plan.md"), "utf8");
 
@@ -234,5 +236,98 @@ export async function isGate2AlreadyStarted(runDir: string): Promise<boolean> {
   }
   const { entries } = await Journal.read(runDir);
   const raw = entries as unknown as Array<Record<string, unknown>>;
-  return raw.some((e) => e.kind === "pr_create_intent" || e.kind === "pr_created");
+  return hasGate2CompletionEvidence(raw) || hasActiveGate2Claim(raw);
+}
+
+/**
+ * PR creation and the Gate 2 checkpoint are durable, non-retryable evidence
+ * that the run has progressed beyond the claim. A failed verification or a
+ * blocker-producing review is deliberately not included here: those are
+ * terminal results for a failed attempt, and a later attempt is legitimate.
+ */
+function hasGate2CompletionEvidence(raw: Array<Record<string, unknown>>): boolean {
+  return raw.some(
+    (e) =>
+      e.kind === "pr_create_intent" ||
+      e.kind === "pr_created" ||
+      (e.kind === "checkpoint_requested" && e.gateType === "pr_review"),
+  );
+}
+
+/**
+ * Only the most recent claim can be active. An older claim followed by a
+ * durably recorded failed result is stale; this is what makes a normal
+ * failure/abort recoverable without weakening the race-safe claim itself.
+ */
+function hasActiveGate2Claim(raw: Array<Record<string, unknown>>): boolean {
+  let latestClaimIndex = -1;
+  for (let i = raw.length - 1; i >= 0; i--) {
+    if (raw[i]?.kind === "gate2_claimed") {
+      latestClaimIndex = i;
+      break;
+    }
+  }
+  if (latestClaimIndex < 0) return false;
+
+  for (let i = latestClaimIndex + 1; i < raw.length; i++) {
+    const entry = raw[i];
+    if (
+      (entry?.kind === "verify_verdict" && entry.outcome === "fail") ||
+      (entry?.kind === "review_completed" && entry.verdict === "blockers-present")
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Atomically claim the right to start Gate 2 for a run.
+ *
+ * The callers' `isGate2AlreadyStarted()` read is useful for a cheap early
+ * refusal, but it cannot prevent two processes that both read "not started"
+ * from proceeding. `Journal.transaction()` supplies the existing
+ * cross-process writer lock; the decision and the durable claim therefore
+ * happen as one operation. The `gate2_claimed` entry is intentionally an
+ * implement-package ad-hoc event, just like the PR operation events in
+ * pipeline.ts, so this package does not expand @pros/barrier's journal union.
+ *
+ * A claim remains fail-closed while its attempt is active. If the pipeline
+ * durably records a failed verification or blocker-producing review, the
+ * claim becomes stale and a later retry may claim the run again. Crashes that
+ * leave no terminal failure result remain fail-closed and require
+ * investigation/reconciliation rather than a silent second execution.
+ */
+export async function claimGate2(runDir: string, runId: string): Promise<void> {
+  const journal = await Journal.open(runDir);
+  try {
+    await journal.transaction(async ({ entries, append }) => {
+      const raw = entries as unknown as Array<Record<string, unknown>>;
+      const alreadyStarted = hasGate2CompletionEvidence(raw) || hasActiveGate2Claim(raw);
+      if (alreadyStarted) {
+        throw new Gate2AlreadyStartedError(runId);
+      }
+
+      const fenceEpoch = raw.reduce(
+        (max, entry) => (typeof entry.fenceEpoch === "number" ? Math.max(max, entry.fenceEpoch) : max),
+        0,
+      );
+      await append({
+        runId,
+        fenceEpoch,
+        kind: "gate2_claimed",
+        claimId: randomUUID(),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    });
+  } finally {
+    await journal.close();
+  }
+}
+
+export class Gate2AlreadyStartedError extends Error {
+  constructor(public readonly runId: string) {
+    super(`Gate 2 has already started or been claimed for run ${runId}`);
+    this.name = "Gate2AlreadyStartedError";
+  }
 }

@@ -176,6 +176,13 @@ test("makeGate1ContinuationJob: an approved-but-unstarted Gate 1 run is continue
     assert.equal(gate2Checkpoint!.phase, "parked");
     assert.ok(gate2Checkpoint!.prRef?.url, "expected the checkpoint to carry the opened PR's url");
 
+    const { entries } = await Journal.read(seeded.runDir);
+    const operationEvents = entries.filter((entry) => entry.kind === "plan_operation_started" || entry.kind === "plan_operation_completed");
+    assert.deepEqual(operationEvents.map((entry) => entry.kind), ["plan_operation_started", "plan_operation_completed"]);
+    const operationCompletion = operationEvents[1] as unknown as { outcome: string; result?: { pr?: { url: string } } };
+    assert.equal(operationCompletion.outcome, "success");
+    assert.equal(operationCompletion.result?.pr?.url, gate2Checkpoint!.prRef!.url);
+
     // Re-running the job immediately must be a no-op (idempotent across ticks) -- skippedAlreadyStarted, not a second Gate 2 run.
     const secondSummary = await job.run();
     assert.deepEqual(secondSummary, { continued: 0, skippedStale: 0, skippedAlreadyStarted: 1, failures: 0, failureRunIds: [] });

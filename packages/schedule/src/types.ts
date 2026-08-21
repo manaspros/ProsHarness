@@ -10,6 +10,19 @@ export interface JobRunSummary {
   [key: string]: unknown;
 }
 
+/**
+ * A job can finish a scan with useful per-item results and still fail overall.
+ * Carrying that summary on the error lets the scheduler record both the
+ * failure and the work completed before it, instead of reducing the status
+ * file to only a message.
+ */
+export class ScheduledJobError extends Error {
+  constructor(message: string, readonly summary: JobRunSummary) {
+    super(message);
+    this.name = "ScheduledJobError";
+  }
+}
+
 export interface ScheduledJob {
   /** e.g. "trigger-sweep", "skillrank-weekly". */
   name: string;

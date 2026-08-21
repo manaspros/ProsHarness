@@ -307,7 +307,7 @@ test("Fence epoch: a stale pre-approval result cannot reach a post-approval stag
       const epochBeforeAnswer = barrier.getState().fenceEpoch;
 
       // requires_plan_amendment bumps the fence epoch (Barrier.recordAnswer).
-      await barrier.recordAnswer(result.checkpointId, cp.questionId, cp.idempotencyKey, "amend it", "requires_plan_amendment");
+      await barrier.recordAnswer(result.checkpointId, cp.questionId, cp.idempotencyKey, "amend", "requires_plan_amendment");
       assert.ok(barrier.fence.current() > epochBeforeAnswer, "the amendment must bump the fence epoch");
 
       // A stale, already-in-flight "verification result"/"PR op" from before

@@ -160,7 +160,6 @@ test("guardian: kill-test #2 - watchdog fails closed when the daemon stops heart
       heartbeatStaleMs: 300,
       env: { ...process.env, FORKING_CHILD_MODE: "escape" },
     });
-    await sleep(200);
     assert.equal(await guardian.isEmpty(), false);
 
     // Simulate the daemon dying: just stop heartbeating (do NOT call quiesce()).

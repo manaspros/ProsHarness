@@ -76,6 +76,26 @@ export type JournalEntry = JournalEntryBase &
         answer: string;
         effect: AnswerEffect;
       }
+    | {
+        /** A competing answer lost the checkpoint's first-writer-wins race. */
+        kind: "answer_late";
+        checkpointId: string;
+        questionId: string;
+        idempotencyKey: string;
+        answer: string;
+        effect: AnswerEffect;
+        phase: RunPhase;
+      }
+    | {
+        /** An answer arrived while the checkpoint was not answerable. */
+        kind: "answer_rejected_stale";
+        checkpointId: string;
+        questionId: string;
+        idempotencyKey: string;
+        answer: string;
+        effect: AnswerEffect;
+        phase: RunPhase;
+      }
     | { kind: "claimed"; checkpointId: string }
     | { kind: "resuming"; checkpointId: string; newAttemptId: string; cwd: string }
     | { kind: "consumed"; checkpointId: string; newAttemptId: string }

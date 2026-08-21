@@ -66,6 +66,9 @@ export async function runAnswerCommand(argv: string[]): Promise<string> {
   try {
     const cp = barrier.getState().checkpoints.get(found.checkpointId);
     if (!cp) throw new Error(`checkpoint ${found.checkpointId} vanished between lookup and open`);
+    if (cp.gateType === "plan_approval" && args.effect === "requires_plan_amendment") {
+      throw new Error("Gate 1 amendment is unavailable; approve or reject the current plan instead");
+    }
     await barrier.recordAnswer(found.checkpointId, args.questionId, cp.idempotencyKey, args.choice, args.effect);
     return `answered ${args.questionId} (checkpoint ${found.checkpointId}) in run ${found.runId}: "${args.choice}" [${args.effect}]`;
   } finally {

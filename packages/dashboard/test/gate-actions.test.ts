@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { planActionToEffect, isAnswerEffect, ANSWER_EFFECTS, DEFAULT_ANSWER_EFFECT } from "../lib/gate-actions.js";
+import { planActionToEffect, isAnswerEffect, ANSWER_EFFECTS, DEFAULT_ANSWER_EFFECT, PLAN_APPROVAL_ACTIONS } from "../lib/gate-actions.js";
 
 test("approve maps to continue_within_approved_plan", () => {
   assert.equal(planActionToEffect("approve"), "continue_within_approved_plan");
 });
 
-test("request_amendment maps to requires_plan_amendment", () => {
-  assert.equal(planActionToEffect("request_amendment"), "requires_plan_amendment");
+test("Gate 1 exposes only approve and reject actions", () => {
+  assert.deepEqual(PLAN_APPROVAL_ACTIONS, ["approve", "reject"]);
 });
 
 test("reject maps to abort", () => {

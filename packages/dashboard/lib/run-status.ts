@@ -14,6 +14,7 @@ import type { RunState } from "@pros/barrier";
 
 export type RunStatusLabel =
   | "parked_awaiting_plan_approval"
+  | "parked_awaiting_gate2"
   | "parked_awaiting_answer"
   | "parked_other"
   | "running"
@@ -31,6 +32,7 @@ export function deriveRunStatus(state: RunState): RunStatusLabel {
   for (const cp of state.checkpoints.values()) {
     if (cp.phase === "parked") {
       if (cp.gateType === "plan_approval") return "parked_awaiting_plan_approval";
+      if (cp.gateType === "pr_review") return "parked_awaiting_gate2";
       if (cp.gateType === "ask_human" || cp.gateType === undefined) return "parked_awaiting_answer";
       return "parked_other";
     }
@@ -47,6 +49,7 @@ export function deriveRunStatus(state: RunState): RunStatusLabel {
 
 export const RUN_STATUS_LABELS: Record<RunStatusLabel, string> = {
   parked_awaiting_plan_approval: "Parked -- awaiting Gate 1 (plan approval)",
+  parked_awaiting_gate2: "Parked -- awaiting Gate 2 PR review",
   parked_awaiting_answer: "Parked -- awaiting answer",
   parked_other: "Parked",
   running: "Running",

@@ -11,9 +11,15 @@
  * still advances by a full `intervalMs` so a broken job doesn't spin the
  * loop hot or hang forever; it just gets retried next cycle, same as a
  * successful job.
+ *
+ * A status-write failure is itself a scheduler failure. It is returned as an
+ * in-memory error status (and retried once as an error record) so callers and
+ * observability hooks cannot mistake a successful job with lost persistence
+ * for an overall success.
  */
 
 import { writeJobStatus } from "./status-store.js";
+import { ScheduledJobError } from "./types.js";
 import type { JobStatus, ScheduledJob } from "./types.js";
 
 export async function runJobOnce(job: ScheduledJob, statusDir: string): Promise<JobStatus> {
@@ -31,7 +37,7 @@ export async function runJobOnce(job: ScheduledJob, statusDir: string): Promise<
       lastDurationMs: now - startedAt,
       nextDueAt: new Date(now + job.intervalMs).toISOString(),
     };
-  } catch (err: any) {
+  } catch (err: unknown) {
     const now = Date.now();
     status = {
       name: job.name,
@@ -40,16 +46,31 @@ export async function runJobOnce(job: ScheduledJob, statusDir: string): Promise<
       lastError: err instanceof Error ? err.message : String(err),
       lastDurationMs: now - startedAt,
       nextDueAt: new Date(now + job.intervalMs).toISOString(),
+      ...(err instanceof ScheduledJobError ? { lastSummary: err.summary } : {}),
     };
   }
 
   try {
     await writeJobStatus(statusDir, status);
-  } catch {
-    // Even a failure to durably persist the status must not crash the
-    // loop -- the in-memory status is still returned to the caller (e.g.
-    // an onTick observability hook), it just may not have made it to disk
-    // this cycle. A future successful write will catch the store up.
+  } catch (err: unknown) {
+    const persistenceError = err instanceof Error ? err.message : String(err);
+    const originalError = status.lastStatus === "error" ? status.lastError : undefined;
+    const failedStatus: JobStatus = {
+      name: status.name,
+      lastRunAt: status.lastRunAt,
+      lastStatus: "error",
+      lastError: originalError
+        ? `${originalError}; failed to persist scheduler status: ${persistenceError}`
+        : `failed to persist scheduler status: ${persistenceError}`,
+      lastDurationMs: status.lastDurationMs,
+      nextDueAt: status.nextDueAt,
+      ...(status.lastSummary ? { lastSummary: status.lastSummary } : {}),
+    };
+
+    // A transient failure may be recoverable after the first attempt, but the
+    // returned status remains error even if this best-effort retry succeeds.
+    status = failedStatus;
+    await writeJobStatus(statusDir, failedStatus).catch(() => undefined);
   }
 
   return status;

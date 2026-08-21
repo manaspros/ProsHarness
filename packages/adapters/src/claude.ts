@@ -87,7 +87,7 @@ export function spawnClaude(opts: SpawnOptions): SpawnResult {
   // stream (the `system`/`init` event does not carry a stable `version`
   // field we want to depend on), so a dedicated `--version` check is the
   // more robust choice over scraping stream events.
-  const versionSeen = execFileAsync("claude", ["--version"])
+  const versionSeen = execFileAsync("claude", ["--version"], { timeout: opts.timeoutMs, killSignal: "SIGKILL" })
     .then(({ stdout }) => stdout.trim())
     .catch(() => "");
 

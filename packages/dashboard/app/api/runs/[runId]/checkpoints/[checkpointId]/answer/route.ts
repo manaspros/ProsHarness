@@ -22,6 +22,7 @@ import {
 import { planActionToEffect, isAnswerEffect, DEFAULT_ANSWER_EFFECT, type PlanApprovalAction } from "../../../../../../../lib/gate-actions";
 import { recordPlanOperation } from "../../../../../../../lib/plan-operations";
 import { withOutputLock, OutputLockConflict } from "../../../../../../../lib/output-lock";
+import { formatGate2StoppedError, gate2OperationCompletion } from "../../../../../../../lib/gate2";
 
 async function parseBody(req: NextRequest): Promise<Record<string, string>> {
   const contentType = req.headers.get("content-type") ?? "";
@@ -60,7 +61,7 @@ export async function POST(
   let effect;
   if (body.planAction) {
     const action = body.planAction as PlanApprovalAction;
-    if (!["approve", "request_amendment", "reject"].includes(action)) {
+    if (!["approve", "reject"].includes(action)) {
       return respondError(req, redirectTo, 400, `invalid planAction: ${body.planAction}`);
     }
     effect = planActionToEffect(action);
@@ -86,6 +87,15 @@ export async function POST(
     const cp = barrier.getState().checkpoints.get(checkpointId);
     if (!cp) {
       return respondError(req, redirectTo, 404, `checkpoint ${checkpointId} not found in run ${runId}`);
+    }
+    if (body.planAction && cp.gateType !== "plan_approval") {
+      return respondError(req, redirectTo, 400, `planAction is only valid for a Gate 1 plan approval checkpoint`);
+    }
+    if (cp.gateType === "plan_approval" && effect === "requires_plan_amendment") {
+      return respondError(req, redirectTo, 400, "Gate 1 amendment is unavailable; approve or reject the current plan instead");
+    }
+    if (cp.gateType === "pr_review" && (answer !== "reviewed" || effect !== "continue_within_approved_plan")) {
+      return respondError(req, redirectTo, 400, "Gate 2 review answers must be reviewed with continue_within_approved_plan");
     }
     await barrier.recordAnswer(checkpointId, cp.questionId, cp.idempotencyKey, answer, effect);
   } catch (err) {
@@ -113,7 +123,7 @@ export async function POST(
           operation: "implementation",
           run: async () => {
             try {
-              await runApprovedGate2({
+              const result = await runApprovedGate2({
                 runsRoot,
                 runId,
                 repoRoot: getHarnessRoot(),
@@ -125,20 +135,23 @@ export async function POST(
                 // Notifications are never an implicit side effect of a UI click.
                 notificationsEnabled: false,
               });
-              await recordPlanOperation({ runId, operation: "implementation", transition: "success" });
+              const completion = gate2OperationCompletion(result);
+              await recordPlanOperation({ runId, operation: "implementation", transition: completion.transition, error: completion.error, result });
             } catch (err) {
               await recordPlanOperation({
                 runId,
                 operation: "implementation",
                 transition: "failed",
-                error: err instanceof Error ? err.message : String(err),
+                error: formatGate2StoppedError(err instanceof Error ? err.message : String(err)),
               }).catch(() => undefined);
             }
           },
         }),
       )
       .catch(async (err) => {
-        const message = err instanceof OutputLockConflict ? "another implementation is already running" : err instanceof Error ? err.message : String(err);
+        const message = formatGate2StoppedError(
+          err instanceof OutputLockConflict ? "another implementation is already running" : err instanceof Error ? err.message : String(err),
+        );
         await recordPlanOperation({ runId, operation: "implementation", transition: "failed", error: message }).catch(() => undefined);
       });
   }

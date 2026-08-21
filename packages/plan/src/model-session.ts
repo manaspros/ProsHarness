@@ -36,6 +36,8 @@ export interface ModelRunOptions {
   permissionMode?: "acceptEdits";
   /** Claude-only: paired with `permissionMode`, see `SpawnOptions.allowedTools`. */
   allowedTools?: string[];
+  /** Bound a real CLI call; used by acceptance callers that must clean up safely on timeout. */
+  timeoutMs?: number;
   rawLogPath?: string;
   attemptId: string;
 }

@@ -8,6 +8,7 @@ import { Surface } from "@/components/Surface";
 import { SectionHeading } from "@/components/SectionHeading";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { parseLaunchResponse, parseScanResponse, responseError, type ScannedSignal } from "@/lib/new-session-response";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
@@ -67,16 +68,6 @@ const SCAN_LABELS: Record<Exclude<TriggerSourceId, "manual">, string> = {
 const DEFAULT_SESSION_PROMPT = "Explore the codebase with a Sonnet subagent, gather the findings and surrounding context, always use subagents when available, then verify the findings before planning.";
 
 /** A trimmed-down view of @pros/triggers' Signal, just the fields the form needs. */
-interface ScannedSignal {
-  sourceId: string;
-  externalId: string;
-  kind: string;
-  title: string;
-  body: string;
-  url?: string;
-  evidence?: { file: string; line: number };
-}
-
 interface BrowseDirectoryEntry {
   name: string;
   path: string;
@@ -192,21 +183,22 @@ export function NewSessionForm({ isFirstRun, defaultRepoRoot, initialDescription
         // got here*, not a different launch mechanism from this form.
         body: JSON.stringify({ repoRoot, description, source: "manual", dangerouslySkipPermissions: true }),
       });
-      const data = await res.json();
+      const data: unknown = await res.json();
       if (!res.ok) {
-        setError(data?.error ?? `launch failed (HTTP ${res.status})`);
+        setError(responseError(data, `launch failed (HTTP ${res.status})`));
         setLaunching(false);
         return;
       }
-      if (data.ok === false) {
-        setNotice(data.message ?? "launch failed");
+      const launchResponse = parseLaunchResponse(data);
+      if (launchResponse.ok === false) {
+        setNotice(launchResponse.message);
         setLaunching(false);
         return;
       }
       // data.ok === true, data.runId present -- land on Plan Review right
       // away. The plan pipeline keeps running in the background, and the
       // plan page refreshes itself until Gate 1 is ready.
-      router.push(`/runs/${encodeURIComponent(data.runId)}/plan?pending=1`);
+      router.push(`/runs/${encodeURIComponent(launchResponse.runId)}/plan?pending=1`);
     } catch (err: any) {
       setError(err?.message ?? String(err));
       setLaunching(false);
@@ -224,20 +216,21 @@ export function NewSessionForm({ isFirstRun, defaultRepoRoot, initialDescription
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ repoRoot, source }),
       });
-      const data = await res.json();
+      const data: unknown = await res.json();
       if (!res.ok) {
-        setError(data?.error ?? `scan failed (HTTP ${res.status})`);
+        setError(responseError(data, `scan failed (HTTP ${res.status})`));
         setScanning(false);
         return;
       }
-      if (data.ok === false) {
+      const scanResponse = parseScanResponse(data);
+      if (scanResponse.ok === false) {
         // The source itself threw a specific, honest error (e.g. MCP
         // unavailable) -- surface it verbatim, never a generic message.
-        setError(data.message ?? "scan failed");
+        setError(scanResponse.message);
         setScanning(false);
         return;
       }
-      const signals: ScannedSignal[] = data.signals ?? [];
+      const signals: ScannedSignal[] = scanResponse.signals;
       setScanSignals(signals);
       if (signals.length === 0) {
         setNotice(

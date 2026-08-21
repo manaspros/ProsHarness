@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readFile, realpath, stat } from "node:fs/promises";
+import path from "node:path";
 import type { ModelSession } from "./model-session.js";
 import { DEFAULT_SESSION_DIRECTIVE } from "./session-directive.js";
 
@@ -43,6 +45,7 @@ export interface RunFindingOptions {
   description: string;
   attemptId: string;
   dangerouslySkipPermissions?: boolean;
+  timeoutMs?: number;
   rawLogPath?: string;
 }
 
@@ -108,15 +111,86 @@ function parseFinding(text: string): Omit<Finding, "findingId"> {
   };
 }
 
+async function validateFindingEvidence(cwd: string, evidence: FindingEvidence[]): Promise<void> {
+  let repoRoot: string;
+  try {
+    repoRoot = await realpath(cwd);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`runFinding: repository path ${cwd} is not accessible: ${reason}`);
+  }
+
+  for (const [index, item] of evidence.entries()) {
+    if (item.file.trim().length === 0) {
+      throw new Error(`runFinding: evidence[${index}].file must not be empty`);
+    }
+    if (path.isAbsolute(item.file)) {
+      throw new Error(`runFinding: evidence[${index}].file ${JSON.stringify(item.file)} must be relative to repository ${repoRoot}`);
+    }
+    if (!Number.isInteger(item.line) || item.line < 1) {
+      throw new Error(`runFinding: evidence[${index}].line must be a positive integer`);
+    }
+    if (item.snippet.length === 0) {
+      throw new Error(`runFinding: evidence[${index}].snippet must not be empty`);
+    }
+
+    const candidate = path.resolve(repoRoot, item.file);
+    let resolvedFile: string;
+    try {
+      resolvedFile = await realpath(candidate);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`runFinding: evidence[${index}].file ${JSON.stringify(item.file)} does not exist: ${reason}`);
+    }
+    const relative = path.relative(repoRoot, resolvedFile);
+    if (relative === "" || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new Error(`runFinding: evidence[${index}].file ${JSON.stringify(item.file)} is outside repository ${repoRoot}`);
+    }
+
+    let fileStat;
+    try {
+      fileStat = await stat(resolvedFile);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`runFinding: evidence[${index}].file ${JSON.stringify(item.file)} is not readable: ${reason}`);
+    }
+    if (!fileStat.isFile()) {
+      throw new Error(`runFinding: evidence[${index}].file ${JSON.stringify(item.file)} is not a regular file`);
+    }
+
+    let source: string;
+    try {
+      source = await readFile(resolvedFile, "utf8");
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`runFinding: evidence[${index}].file ${JSON.stringify(item.file)} is not readable: ${reason}`);
+    }
+    const lines = source.split(/\r\n|\n|\r/);
+    if (lines.at(-1) === "") lines.pop();
+    if (item.line > lines.length) {
+      throw new Error(
+        `runFinding: evidence[${index}] line ${item.line} is outside ${JSON.stringify(item.file)} (line count: ${lines.length})`,
+      );
+    }
+    if (!lines[item.line - 1]!.includes(item.snippet)) {
+      throw new Error(
+        `runFinding: evidence[${index}] snippet does not occur on ${JSON.stringify(item.file)}:${item.line}`,
+      );
+    }
+  }
+}
+
 export async function runFinding(session: ModelSession, opts: RunFindingOptions): Promise<Finding> {
   const result = await session.run({
     cwd: opts.cwd,
     prompt: buildFindingPrompt(opts.description),
     schema: FINDING_SCHEMA,
     dangerouslySkipPermissions: opts.dangerouslySkipPermissions,
+    timeoutMs: opts.timeoutMs,
     rawLogPath: opts.rawLogPath,
     attemptId: opts.attemptId,
   });
   const parsed = parseFinding(result.text);
+  await validateFindingEvidence(opts.cwd, parsed.evidence);
   return { findingId: randomUUID(), ...parsed, sessionId: result.sessionId };
 }

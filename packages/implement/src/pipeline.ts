@@ -51,7 +51,8 @@ import {
   loadCredentialFromEnv,
   checkGhAuthenticated,
 } from "./pr.js";
-import { runImplementation, type ImplementResult } from "./implement.js";
+import { assertImplementationScope, runImplementation, type ImplementResult } from "./implement.js";
+import { claimGate2 } from "./from-run.js";
 import { runVerification, noCommitVerdict, type Verdict } from "./verify.js";
 import { runAdversarialReview, runCodexAdvisoryReview, type ReviewResult, type CodexAdvisoryResult } from "./review.js";
 import { resolveProjectByRepoRoot, type ValidationCommand } from "./project-config.js";
@@ -490,6 +491,11 @@ export interface Gate2PipelineResult {
 }
 
 export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate2PipelineResult> {
+  // The implementation scope is security policy, not an optional hint. Check
+  // it before acquiring resources so malformed/empty runtime input cannot
+  // reach any model or become an unrestricted run.
+  assertImplementationScope(opts.fileAllowlist);
+
   let lease: ConcurrencyLease | undefined;
   let heartbeatTimer: NodeJS.Timeout | undefined;
   let journal: Journal | undefined;
@@ -541,6 +547,12 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
       ghClient = new AmbientGhClient();
     }
 
+    // This durable, journal-serialized claim covers every Gate 2 entry point
+    // that calls runGate2Pipeline, including the CLI and scheduler. The
+    // callers' read-only duplicate checks remain useful for fast refusal, but
+    // this is the race-safe decision point.
+    await claimGate2(opts.runDir, opts.runId);
+
     const fenceEpoch = (await loadRunState(opts.runDir)).fenceEpoch;
 
     // Opened once, here, and reused for the whole function (rather than the
@@ -573,6 +585,18 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
     });
 
     if (!implementResult.committed) {
+      // Keep the aborted result durable just like a verifier failure below.
+      // claimGate2 uses this existing result event to distinguish a completed
+      // claim from a claim left behind by a failed implementation attempt.
+      await journal.append({
+        runId: opts.runId,
+        fenceEpoch,
+        kind: "verify_verdict",
+        outcome: "fail",
+        summary: "implementation produced no commit",
+        failingChecksJson: JSON.stringify([]),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
       return {
         implementResult,
         verdict: noCommitVerdict("implementation produced no commit"),
