@@ -484,7 +484,22 @@ async function seedCompletedRun(): Promise<
       { severity: "minor", claim: "The default theme value (\"light\") is a magic string duplicated nowhere else -- consider a shared constant.", suggested_change: "Extract a DEFAULT_THEME constant." },
     ]),
     codexSession: new CodexReviewSession(runDir, []),
-    verifierSession: new VerifierSession(runDir, { outcome: "pass", summary: "pnpm -r typecheck and pnpm -r test both pass", failingChecks: [] }),
+    verifierSession: new VerifierSession(runDir, { outcome: "pass", summary: "the demo's validation commands (parseConfig guard + fix: commit convention) both pass", failingChecks: [] }),
+    // The demo repo has no PROJECT_REGISTRY entry (it's a synthetic scratch
+    // repo, not a real registered project) and no `pnpm run typecheck`/`test`
+    // scripts of its own -- verify.ts now REALLY executes whatever commands
+    // are configured (no more model self-report), and without this override
+    // it silently inherits `runGate2Pipeline`'s FALLBACK_VALIDATION_COMMANDS,
+    // which are ProsHarness's OWN `pnpm run typecheck`/`pnpm run test`. Those
+    // fail immediately against this repo (no such scripts exist here), which
+    // is exactly the seed:demo regression this fixes. These commands are
+    // explicit and genuinely evaluated against the real post-fix worktree
+    // state (ImplementSession actually writes+commits the fix below) --
+    // not a stubbed/always-true check.
+    validationCommands: [
+      { command: "grep -q 'config.settings?.theme' src/parseConfig.ts", label: "parseConfig guards optional settings access" },
+      { command: "git log -1 --pretty=%s | grep -qE '^fix:'", label: "latest commit follows the fix: convention" },
+    ],
     ghClient,
     ghCredential,
   });

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deriveRunStatus } from "../lib/run-status.js";
+import { deriveRunStatus, findRunningAttemptId, deriveLiveness, STALE_RAW_LOG_THRESHOLD_MS } from "../lib/run-status.js";
 import type { RunState, CheckpointRecord, AttemptRecord } from "@pros/barrier";
 
 function emptyState(): RunState {
@@ -92,4 +92,38 @@ test("parked takes priority even if some attempt looks still-running", () => {
   state.attempts.set("a1", attempt({}));
   state.checkpoints.set("cp1", cp({ phase: "parked", gateType: "plan_approval" }));
   assert.equal(deriveRunStatus(state), "parked_awaiting_plan_approval");
+});
+
+// B9 regression: journal-only status ("running") cannot tell an actively
+// producing session apart from one wedged on a hung tool call. These pin
+// findRunningAttemptId/deriveLiveness -- the pure half of that fix (the I/O
+// half, reading raw.log's real mtime, is board-data.test.ts's job).
+
+test("findRunningAttemptId: returns the attempt with no endedReason", () => {
+  const state = emptyState();
+  state.attempts.set("a1", attempt({ attemptId: "a1", endedReason: "ended" }));
+  state.attempts.set("a2", attempt({ attemptId: "a2" }));
+  assert.equal(findRunningAttemptId(state), "a2");
+});
+
+test("findRunningAttemptId: undefined when no attempt is running", () => {
+  const state = emptyState();
+  state.attempts.set("a1", attempt({ attemptId: "a1", endedReason: "ended" }));
+  assert.equal(findRunningAttemptId(state), undefined);
+});
+
+test("deriveLiveness: no raw.log mtime yet (attempt just spawned) -> n/a, not stale", () => {
+  assert.equal(deriveLiveness(undefined, 1_000_000), "n/a");
+});
+
+test("deriveLiveness: mtime just under the threshold -> active", () => {
+  const now = 1_000_000;
+  const mtime = now - (STALE_RAW_LOG_THRESHOLD_MS - 1);
+  assert.equal(deriveLiveness(mtime, now), "active");
+});
+
+test("deriveLiveness: mtime past the threshold -> stale (the wedged case)", () => {
+  const now = 1_000_000;
+  const mtime = now - (STALE_RAW_LOG_THRESHOLD_MS + 1);
+  assert.equal(deriveLiveness(mtime, now), "stale");
 });

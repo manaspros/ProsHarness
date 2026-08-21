@@ -19,6 +19,13 @@
  *     don't have either concept. is_unknown is always 0 for these rows: the
  *     journal is our own well-typed schema, so "unknown" only applies to
  *     raw_events sourced from attempts/<attemptId>/raw.log.
+ *   - `validation_checks`: one row per Phase 3 `validation_command_run`
+ *     journal entry (packages/implement's verify.ts/pipeline.ts) -- the
+ *     harness-recorded exit code/duration/output-tail evidence a verdict was
+ *     derived from. Not in the architecture doc (predates M4's verify
+ *     rewrite); added the same way `worktrees` was, as a dedicated table
+ *     alongside the generic `events` catch-all so a decision-card UI can
+ *     query "every check for this run/attempt" without parsing JSON.
  *   - `worktrees`: not spelled out in the architecture doc's table list; the
  *     doc only says the worktree saga's journal entries exist. Derived
  *     reasonably from packages/barrier/src/types.ts's
@@ -91,6 +98,21 @@ CREATE TABLE IF NOT EXISTS findings (
   UNIQUE(run_id, finding_id)
 );
 
+CREATE TABLE IF NOT EXISTS validation_checks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  command TEXT NOT NULL,
+  label TEXT,
+  role TEXT NOT NULL,
+  exit_code INTEGER NOT NULL,
+  timed_out INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  output_tail TEXT NOT NULL,
+  UNIQUE(run_id, seq)
+);
+
 CREATE TABLE IF NOT EXISTS worktrees (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id TEXT NOT NULL,
@@ -118,6 +140,7 @@ export const ALL_TABLES = [
   "plans",
   "objections",
   "findings",
+  "validation_checks",
   "worktrees",
   "_index_meta",
 ] as const;

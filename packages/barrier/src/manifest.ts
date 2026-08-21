@@ -1,17 +1,9 @@
 import { createHash } from "node:crypto";
 import { rename, writeFile, readFile, unlink, realpath } from "node:fs/promises";
 import path from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { Journal } from "./journal.js";
+import { git } from "./git.js";
 import type { LaunchConfig, Manifest } from "./types.js";
-
-const execFileAsync = promisify(execFile);
-
-async function git(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", args, { cwd, maxBuffer: 64 * 1024 * 1024 });
-  return stdout;
-}
 
 /**
  * A working-state hash covering staged, unstaged, AND untracked files.

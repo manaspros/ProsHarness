@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { deriveBoardStage, unresolvedObjections, hasMajorUnresolved, type BoardStageInputs } from "../lib/board-data.js";
+import { getRawLogMtimeMs } from "../lib/liveness-io.js";
+import { deriveLiveness } from "../lib/run-status.js";
 import type { RunState, CheckpointRecord } from "@pros/barrier";
 import type { PlanRow, ObjectionRow } from "@pros/index";
 
@@ -136,4 +141,34 @@ test("unresolvedObjections / hasMajorUnresolved", () => {
   const unresolved = unresolvedObjections(objs);
   assert.equal(unresolved.length, 1);
   assert.equal(hasMajorUnresolved(objs), true);
+});
+
+// B9 regression: proves the actual filesystem read (not just the pure
+// deriveLiveness math already covered in run-status.test.ts) distinguishes
+// a freshly-written raw.log ("active") from a stale one ("stale") from a
+// run with no raw.log at all ("n/a", e.g. idle/finished/not-yet-spawned).
+test("getRawLogMtimeMs + deriveLiveness: fresh raw.log -> active, stale raw.log -> stale, missing raw.log -> n/a", async () => {
+  const runsRoot = await mkdtemp(path.join(tmpdir(), "pros-board-data-liveness-"));
+  try {
+    const runDir = path.join(runsRoot, "run-1");
+    const attemptDir = path.join(runDir, "attempts", "run-1-implement");
+    await mkdir(attemptDir, { recursive: true });
+    const rawLogPath = path.join(attemptDir, "raw.log");
+    await writeFile(rawLogPath, '{"type":"system"}\n');
+
+    const freshMtime = await getRawLogMtimeMs(runDir, "run-1-implement");
+    assert.ok(freshMtime !== undefined);
+    assert.equal(deriveLiveness(freshMtime, Date.now()), "active");
+
+    // Simulate a wedged session: the log stopped moving well past the
+    // staleness threshold, but the "now" clock kept advancing.
+    const farFuture = Date.now() + 10 * 60 * 1000;
+    assert.equal(deriveLiveness(freshMtime, farFuture), "stale");
+
+    const missing = await getRawLogMtimeMs(runDir, "run-1-does-not-exist");
+    assert.equal(missing, undefined);
+    assert.equal(deriveLiveness(missing, Date.now()), "n/a");
+  } finally {
+    await rm(runsRoot, { recursive: true, force: true }).catch(() => undefined);
+  }
 });

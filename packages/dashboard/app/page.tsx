@@ -1,3 +1,4 @@
+import path from "node:path";
 import Link from "next/link";
 import { ArrowUpRight, CircleAlert, Layers3, Plus, RotateCcw } from "lucide-react";
 
@@ -6,6 +7,8 @@ import { listRuns } from "@/lib/list-runs";
 import { rebuildAndOpenIndex } from "@/lib/db";
 import { rebuildHealthIssues, isHealthy } from "@/lib/health";
 import { parseLatestEventOfKind, type VerifyVerdictPayload, type ReviewCompletedPayload, type PrCreatedPayload } from "@/lib/review-data";
+import { findRunningAttemptId, deriveLiveness } from "@/lib/run-status";
+import { getRawLogMtimeMs } from "@/lib/liveness-io";
 import {
   deriveBoardStage,
   unresolvedObjections,
@@ -92,6 +95,14 @@ export default async function HomePage() {
 
       const lastTs = getLastEventTimestamp(db, r.runId);
 
+      // B9: only meaningful while a live attempt actually exists -- every
+      // other stage (parked, idle, done) has no live subprocess to be stale.
+      const runningAttemptId = findRunningAttemptId(r.state);
+      const rawLogMtimeMs = runningAttemptId
+        ? await getRawLogMtimeMs(path.join(runsRoot, r.runId), runningAttemptId)
+        : undefined;
+      const liveness = runningAttemptId ? deriveLiveness(rawLogMtimeMs) : "n/a";
+
       const card: BoardCardData = {
         runId: r.runId,
         href: hrefForStage(r.runId, stage),
@@ -103,6 +114,7 @@ export default async function HomePage() {
         hasMajorUnresolvedObjection: major,
         relativeTime: lastTs ? formatRelativeTime(lastTs) : undefined,
         fenceEpoch: r.state.fenceEpoch,
+        liveness,
       };
 
       byStage.get(stage)!.push(card);

@@ -22,6 +22,7 @@ import { EmptyState } from "../../../../components/EmptyState";
 import { Alert } from "../../../../components/Alert";
 import { cn } from "../../../../lib/utils";
 import { LiveSessionPanel } from "../../../../components/LiveSessionPanel";
+import { GraphLiveRefresh } from "../../../../components/GraphLiveRefresh";
 
 export const dynamic = "force-dynamic";
 
@@ -98,6 +99,7 @@ export default async function GraphPage({ params }: { params: Promise<{ runId: s
       <SectionHeading title="Claude session" description={<code>{runId}</code>} />
 
       <LiveSessionPanel runId={runId} initial={sessionActivity} />
+      <GraphLiveRefresh runId={runId} />
 
       {unknownCount > 0 && (
         <Alert variant="warning" title="Unparsed events present">

@@ -7,6 +7,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Barrier, Journal } from "@pros/barrier";
 import type { ModelRunOptions, ModelRunResult, ModelSession } from "@pros/plan";
+import { createServer, type Server } from "node:http";
 import { runPlanCommand } from "../src/plan.js";
 
 const execFileAsync = promisify(execFile);
@@ -120,6 +121,76 @@ test("pros plan: end-to-end with fake sessions + a real worktree allocation", as
     assert.deepEqual(objectionsJson.objections, []);
     assert.deepEqual(objectionsJson.unresolved, []);
   } finally {
+    await rm(repoRoot, { recursive: true, force: true }).catch(() => undefined);
+    await rm(worktreesRoot, { recursive: true, force: true }).catch(() => undefined);
+    await rm(runsRoot, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+/**
+ * B8 regression: `runPlanCommand` used to hardcode
+ * `notificationsEnabled: envOverrides.notificationsEnabled ?? false`, so no
+ * environment variable existed anywhere that could turn Gate 1's
+ * notification on. This proves the real CLI entry point (not just
+ * `runPlanPipeline` called directly, which packages/plan/test/gate1-e2e.test.ts
+ * already covers) reads `PROS_NOTIFICATIONS_ENABLED` and actually fires.
+ */
+test("pros plan: PROS_NOTIFICATIONS_ENABLED=1 makes the real CLI entry point fire the Gate 1 park notification", async () => {
+  const repoRoot = await makeTempRepo();
+  const worktreesRoot = await mkdtemp(path.join(tmpdir(), "pros-cli-plan-notify-worktrees-"));
+  const runsRoot = await mkdtemp(path.join(tmpdir(), "pros-cli-plan-notify-runs-"));
+  const runId = "run-cli-plan-notify-1";
+  const previous = process.env.PROS_NOTIFICATIONS_ENABLED;
+  let server: Server | undefined;
+  try {
+    let resolveRequest: (() => void) | undefined;
+    const requestReceived = new Promise<void>((resolve) => {
+      resolveRequest = resolve;
+    });
+    server = createServer((_req, res) => {
+      resolveRequest?.();
+      res.writeHead(200);
+      res.end("ok");
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+
+    process.env.PROS_NOTIFICATIONS_ENABLED = "1";
+
+    const claudeSession = new FakeSession("claude", [
+      JSON.stringify({
+        title: "off-by-one in loop",
+        evidence: [{ file: "loop.ts", line: 1, snippet: "for (let i = 0; i <= arr.length; i++) {}" }],
+        summary: "loop bound is inclusive when it should be exclusive",
+      }),
+      JSON.stringify({
+        markdown: "# Plan\n\nFix the loop bound.",
+        structured: { steps: ["fix bound"], filesTouched: ["loop.ts"], risk: "low" },
+      }),
+    ]);
+    const codexSession = new FakeSession("codex", [
+      JSON.stringify({ approach: "fix the comparison operator", risks: ["none major"] }),
+      JSON.stringify({ objections: [] }),
+    ]);
+
+    await runPlanCommand([repoRoot, "sumAll returns NaN for some inputs", `--run-id=${runId}`], {
+      worktreesRoot,
+      runsRoot,
+      claudeSession,
+      codexSession,
+      ntfyUrl: `http://127.0.0.1:${address.port}/test-notification`,
+    });
+
+    const notificationOutcome = await Promise.race([
+      requestReceived.then(() => "sent" as const),
+      new Promise<"not-sent">((resolve) => setTimeout(() => resolve("not-sent"), 2000)),
+    ]);
+    assert.equal(notificationOutcome, "sent", "PROS_NOTIFICATIONS_ENABLED=1 must make the real CLI entry point notify");
+  } finally {
+    if (previous === undefined) delete process.env.PROS_NOTIFICATIONS_ENABLED;
+    else process.env.PROS_NOTIFICATIONS_ENABLED = previous;
+    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
     await rm(repoRoot, { recursive: true, force: true }).catch(() => undefined);
     await rm(worktreesRoot, { recursive: true, force: true }).catch(() => undefined);
     await rm(runsRoot, { recursive: true, force: true }).catch(() => undefined);

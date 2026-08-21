@@ -26,6 +26,16 @@ export interface ModelRunOptions {
   resumeSessionId?: string;
   /** Explicit opt-in for Claude's permission bypass; ignored by other providers. */
   dangerouslySkipPermissions?: boolean;
+  /**
+   * Claude-only scoped alternative to `dangerouslySkipPermissions` -- see
+   * `@pros/adapters`' `SpawnOptions.permissionMode` doc comment. Threaded
+   * through so `RealClaudeSession` can request `acceptEdits` instead of a
+   * full bypass for callers (today: `@pros/implement`'s implement stage)
+   * that need scoped, unattended edit/bash access rather than everything.
+   */
+  permissionMode?: "acceptEdits";
+  /** Claude-only: paired with `permissionMode`, see `SpawnOptions.allowedTools`. */
+  allowedTools?: string[];
   /** Bound a real CLI call; used by acceptance callers that must clean up safely on timeout. */
   timeoutMs?: number;
   rawLogPath?: string;

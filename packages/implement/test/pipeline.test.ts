@@ -92,14 +92,25 @@ class CodexReviewSession {
   }
 }
 
+/**
+ * Fake verifier session: post-Phase-3, the model is advisory-only (it writes
+ * a `summary`, never an `outcome`) -- `outcome` is now derived mechanically
+ * from the harness-run `validationCommands` passed to `runGate2Pipeline`
+ * (see each test call site below). This fake only ever needs to hand back a
+ * summary string.
+ */
 class VerifierSession {
   readonly provider = "claude" as const;
-  constructor(private readonly verdict: { outcome: "pass" | "fail"; summary: string; failingChecks: string[] }) {}
+  constructor(private readonly summary: string) {}
 
   async run(_opts: ModelRunOptions): Promise<ModelRunResult> {
-    return { text: JSON.stringify(this.verdict), usage: { inputTokens: 15, outputTokens: 15 } };
+    return { text: JSON.stringify({ summary: this.summary }), usage: { inputTokens: 15, outputTokens: 15 } };
   }
 }
+
+/** Deterministic, instant validation-command lists for tests -- avoids the harness actually spawning a real project's build/test suite. */
+const PASSING_VALIDATION_COMMANDS = [{ command: "exit 0", label: "checks" }];
+const FAILING_VALIDATION_COMMANDS = [{ command: "exit 1", label: "pnpm test" }];
 
 /** Wraps a GhClient and counts calls to createDraftPr, so tests can assert "PR creation never attempted". */
 class CountingGhClient implements GhClient {
@@ -168,7 +179,8 @@ test("happy path: commit + pass verdict + clean review -> draft PR opens, parks 
       fileAllowlist: ["fix.txt"],
       claudeSession: new ClaudeStageSession(repo.workDir),
       codexSession: new CodexReviewSession([]),
-      verifierSession: new VerifierSession({ outcome: "pass", summary: "all checks pass", failingChecks: [] }),
+      verifierSession: new VerifierSession("all checks pass"),
+      validationCommands: PASSING_VALIDATION_COMMANDS,
       ghClient,
       ghCredential: CRED,
       // If Gate 2 wires notifications implicitly, this local endpoint
@@ -209,6 +221,59 @@ test("happy path: commit + pass verdict + clean review -> draft PR opens, parks 
   }
 });
 
+test("B9/B8 regression: notificationsEnabled=true DOES fire a Gate 2 (pr_review) notification, unlike the default-off happy path above", async () => {
+  const runId = "run-notify-on-1";
+  const repo = await makeRepoScenario(`pros/${runId}/attempt`);
+  const { runsRoot, runDir } = await makeRunDir(runId);
+  let server: Server | undefined;
+  try {
+    let resolveRequest: (() => void) | undefined;
+    const requestReceived = new Promise<void>((resolve) => {
+      resolveRequest = resolve;
+    });
+    server = createServer((_req, res) => {
+      resolveRequest?.();
+      res.writeHead(200);
+      res.end("ok");
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+
+    const ghClient = new CountingGhClient(new LocalGhStub({ bareRepoPath: repo.bareRepoPath }));
+
+    const result = await runGate2Pipeline({
+      runId,
+      runDir,
+      worktreePath: repo.workDir,
+      branch: repo.branch,
+      baseBranch: repo.baseBranch,
+      repoRoot: REPO_ROOT,
+      planMarkdown: "# Plan\nFix the thing.",
+      fileAllowlist: ["fix.txt"],
+      claudeSession: new ClaudeStageSession(repo.workDir),
+      codexSession: new CodexReviewSession([]),
+      verifierSession: new VerifierSession("all checks pass"),
+      validationCommands: PASSING_VALIDATION_COMMANDS,
+      ghClient,
+      ghCredential: CRED,
+      ntfyUrl: `http://127.0.0.1:${address.port}/test-notification`,
+      notificationsEnabled: true,
+    });
+
+    const notificationOutcome = await Promise.race([
+      requestReceived.then(() => "sent" as const),
+      new Promise<"not-sent">((resolve) => setTimeout(() => resolve("not-sent"), 2000)),
+    ]);
+    assert.equal(notificationOutcome, "sent", "notificationsEnabled=true must actually fire the Gate 2 (pr_review) park notification");
+    assert.ok(result.pr, "expected a draft PR to be opened");
+  } finally {
+    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    await cleanupRepoScenario(repo);
+    await rm(runsRoot, { recursive: true, force: true });
+  }
+});
+
 test("verification fails -> no PR, aborted at verify, gh client never called", async () => {
   const runId = "run-verify-fail-1";
   const repo = await makeRepoScenario(`pros/${runId}/attempt`);
@@ -227,7 +292,8 @@ test("verification fails -> no PR, aborted at verify, gh client never called", a
       fileAllowlist: ["fix.txt"],
       claudeSession: new ClaudeStageSession(repo.workDir),
       codexSession: new CodexReviewSession([]),
-      verifierSession: new VerifierSession({ outcome: "fail", summary: "pnpm test: 2 failing", failingChecks: ["pnpm test: 2 failing"] }),
+      verifierSession: new VerifierSession("pnpm test: 2 failing"),
+      validationCommands: FAILING_VALIDATION_COMMANDS,
       ghClient,
       ghCredential: CRED,
     });
@@ -261,7 +327,8 @@ test("review finds a blocker -> no PR, aborted at review, gh client never called
       fileAllowlist: ["fix.txt"],
       claudeSession: new ClaudeStageSession(repo.workDir),
       codexSession: new CodexReviewSession([blocker]),
-      verifierSession: new VerifierSession({ outcome: "pass", summary: "all checks pass", failingChecks: [] }),
+      verifierSession: new VerifierSession("all checks pass"),
+      validationCommands: PASSING_VALIDATION_COMMANDS,
       ghClient,
       ghCredential: CRED,
     });
@@ -393,7 +460,8 @@ test("happy path journals a verify_verdict (pass) and a review_completed (approv
       fileAllowlist: ["fix.txt"],
       claudeSession: new ClaudeStageSession(repo.workDir),
       codexSession: new CodexReviewSession([]),
-      verifierSession: new VerifierSession({ outcome: "pass", summary: "all checks pass", failingChecks: [] }),
+      verifierSession: new VerifierSession("all checks pass"),
+      validationCommands: PASSING_VALIDATION_COMMANDS,
       ghClient,
       ghCredential: CRED,
     });
@@ -437,11 +505,8 @@ test("FAILING verification is durably journaled as verify_verdict(fail), not swa
       fileAllowlist: ["fix.txt"],
       claudeSession: new ClaudeStageSession(repo.workDir),
       codexSession: new CodexReviewSession([]),
-      verifierSession: new VerifierSession({
-        outcome: "fail",
-        summary: "pnpm test: 2 failing",
-        failingChecks: ["pnpm test: 2 failing"],
-      }),
+      verifierSession: new VerifierSession("a model summary is irrelevant here -- exit code determines the verdict"),
+      validationCommands: FAILING_VALIDATION_COMMANDS,
       ghClient,
       ghCredential: CRED,
     });
@@ -459,8 +524,8 @@ test("FAILING verification is durably journaled as verify_verdict(fail), not swa
     const verdictEntry = raw.find((e) => e.kind === "verify_verdict");
     assert.ok(verdictEntry, "expected a durably journaled verify_verdict entry even on a failing run");
     assert.equal(verdictEntry!.outcome, "fail");
-    assert.equal(verdictEntry!.summary, "pnpm test: 2 failing");
-    assert.deepEqual(JSON.parse(verdictEntry!.failingChecksJson as string), ["pnpm test: 2 failing"]);
+    assert.equal(verdictEntry!.summary, "1/1 validation command(s) failed: pnpm test: exit 1");
+    assert.deepEqual(JSON.parse(verdictEntry!.failingChecksJson as string), ["pnpm test: exit 1"]);
 
     // Review never runs after a failing verdict, so no review_completed
     // entry should exist for this run.
@@ -491,7 +556,8 @@ test("review with an unresolved blocker is durably journaled as review_completed
       fileAllowlist: ["fix.txt"],
       claudeSession: new ClaudeStageSession(repo.workDir),
       codexSession: new CodexReviewSession([blocker]),
-      verifierSession: new VerifierSession({ outcome: "pass", summary: "all checks pass", failingChecks: [] }),
+      verifierSession: new VerifierSession("all checks pass"),
+      validationCommands: PASSING_VALIDATION_COMMANDS,
       ghClient,
       ghCredential: CRED,
     });

@@ -54,6 +54,7 @@ export interface RebuildReport {
   plansInserted: number;
   objectionsInserted: number;
   findingsInserted: number;
+  validationChecksInserted: number;
   worktreesInserted: number;
   /** Non-"ok" raw.log lines encountered -- useful for a human/test to inspect, not just count. */
   rawLogParseIssues: RawLogParseIssue[];
@@ -240,6 +241,7 @@ async function buildIndex(dbPath: string, runsRoot: string): Promise<RebuildRepo
     plansInserted: 0,
     objectionsInserted: 0,
     findingsInserted: 0,
+    validationChecksInserted: 0,
     worktreesInserted: 0,
     rawLogParseIssues: [],
   };
@@ -264,6 +266,10 @@ async function buildIndex(dbPath: string, runsRoot: string): Promise<RebuildRepo
     `INSERT OR IGNORE INTO plans (run_id, plan_id, version, markdown, structured_json, state, unresolved_objections_json, edited_at, edited_by)
      VALUES (@runId, @planId, @version, @markdown, @structuredJson, @state, @unresolvedObjectionsJson, @editedAt, @editedBy)`,
   );
+  const insertValidationCheck = db.prepare(
+    `INSERT OR IGNORE INTO validation_checks (run_id, attempt_id, seq, command, label, role, exit_code, timed_out, duration_ms, output_tail)
+     VALUES (@runId, @attemptId, @seq, @command, @label, @role, @exitCode, @timedOut, @durationMs, @outputTail)`,
+  );
   const insertWorktree = db.prepare(
     `INSERT OR IGNORE INTO worktrees (run_id, allocation_id, repo_root, worktree_path, branch, base_sha, fence_epoch, state, reason)
      VALUES (@runId, @allocationId, @repoRoot, @worktreePath, @branch, @baseSha, @fenceEpoch, @state, @reason)`,
@@ -277,6 +283,30 @@ async function buildIndex(dbPath: string, runsRoot: string): Promise<RebuildRepo
       for (const entry of entries) {
         insertEvent.run({ runId, kind: entry.kind, payloadJson: JSON.stringify(entry), seq: entry.seq });
         report.eventsInserted++;
+
+        // Phase 3: `validation_command_run` is not a member of @pros/barrier's
+        // closed `JournalEntry` union (same tolerant-parsing convention as
+        // `verify_verdict`/`pr_created` -- see packages/implement/src/
+        // pipeline.ts's file doc comment for why), so it can't be a `switch`
+        // case label on `entry.kind`'s typed union below. Handled here as a
+        // loosely-typed sibling check instead, same technique
+        // reconcilePrOps uses to read those other off-union kinds.
+        const rawEntry = entry as unknown as Record<string, unknown>;
+        if (rawEntry.kind === "validation_command_run") {
+          insertValidationCheck.run({
+            runId,
+            attemptId: typeof rawEntry.attemptId === "string" ? rawEntry.attemptId : "",
+            seq: entry.seq,
+            command: typeof rawEntry.command === "string" ? rawEntry.command : "",
+            label: typeof rawEntry.label === "string" ? rawEntry.label : null,
+            role: typeof rawEntry.role === "string" ? rawEntry.role : "gate",
+            exitCode: typeof rawEntry.exitCode === "number" ? rawEntry.exitCode : -1,
+            timedOut: rawEntry.timedOut ? 1 : 0,
+            durationMs: typeof rawEntry.durationMs === "number" ? rawEntry.durationMs : 0,
+            outputTail: typeof rawEntry.outputTail === "string" ? rawEntry.outputTail : "",
+          });
+          report.validationChecksInserted++;
+        }
 
         switch (entry.kind) {
           case "finding_recorded": {

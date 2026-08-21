@@ -14,6 +14,8 @@ import {
   isGate2AlreadyStarted,
 } from "../src/from-run.js";
 import { InvalidFileAllowlistError } from "../src/implement.js";
+import { buildPrContent } from "../src/pipeline.js";
+import { runVerification, type Verdict } from "../src/verify.js";
 import { REPO_ROOT } from "./helpers.js";
 
 const execFileAsync = promisify(execFile);
@@ -34,6 +36,26 @@ class FakeSession implements ModelSession {
     this.i += 1;
     return { text, usage: { inputTokens: 10, outputTokens: 10 } };
   }
+}
+
+class SummarySession implements ModelSession {
+  readonly provider = "claude" as const;
+  async run(_opts: ModelRunOptions): Promise<ModelRunResult> {
+    return { text: JSON.stringify({ summary: "ok" }), usage: { inputTokens: 1, outputTokens: 1 } };
+  }
+}
+
+/** Same pattern as pr-content.test.ts's makeVerdict -- Verdict is unconstructible outside verify.ts's brand. */
+async function makeVerdict(runDir: string): Promise<Verdict> {
+  return runVerification({
+    verifierSession: new SummarySession(),
+    worktreePath: process.cwd(),
+    runId: "verdict-run",
+    runDir,
+    expectedFenceEpoch: 0,
+    attemptId: "verdict-run-verify",
+    validationCommands: [{ command: "exit 0", label: "check-a" }],
+  });
 }
 
 async function seedRepoAndRunGate1(opts: {
@@ -190,6 +212,129 @@ test("deriveGate2OptionsFromRun: missing filesTouched refuses Gate 2 instead of 
         return true;
       },
     );
+  } finally {
+    await rm(worktreesRoot, { recursive: true, force: true }).catch(() => undefined);
+    await rm(runsRoot, { recursive: true, force: true }).catch(() => undefined);
+    if (seedRepoRoot) await rm(seedRepoRoot, { recursive: true, force: true }).catch(() => undefined);
+    if (bareRepoPath) await rm(bareRepoPath, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("deriveGate2OptionsFromRun: planClaim/planDiagram are wired from the journal's structured plan, and flow through buildPrContent into a real diagram+claim-derived PR", async () => {
+  const worktreesRoot = await mkdtemp(path.join(tmpdir(), "pros-fromrun-wt3-"));
+  const runsRoot = await mkdtemp(path.join(tmpdir(), "pros-fromrun-runs3-"));
+  const runId = "from-run-claim-diagram";
+  let seedRepoRoot: string | undefined;
+  let bareRepoPath: string | undefined;
+
+  try {
+    const seeded = await seedRepoAndRunGate1({
+      runsRoot,
+      worktreesRoot,
+      runId,
+      planStructured: {
+        steps: ["do the thing"],
+        filesTouched: ["widget.ts"],
+        risk: "low",
+        claim: "Add retry to the flaky webhook call",
+        diagram: "graph TD\nA-->B",
+      },
+    });
+    seedRepoRoot = seeded.seedRepoRoot;
+    bareRepoPath = seeded.bareRepoPath;
+
+    // The real derivation path -- no hand-assembled Gate2PipelineOptions.
+    const opts = await deriveGate2OptionsFromRun({ runsRoot, runId, repoRoot: REPO_ROOT });
+    assert.equal(opts.planClaim, "Add retry to the flaky webhook call");
+    assert.equal(opts.planDiagram, "graph TD\nA-->B");
+
+    const verdict = await makeVerdict(seeded.runDir);
+    const { title, body } = buildPrContent({
+      runId,
+      planClaim: opts.planClaim,
+      planMarkdown: opts.planMarkdown,
+      planDiagram: opts.planDiagram,
+      verdict,
+      codexAdvisory: undefined,
+      unresolvedNonBlockers: [],
+    });
+
+    assert.match(title, /^add: /);
+    assert.match(body, /## Diagram/);
+    assert.match(body, /```mermaid\ngraph TD\nA-->B\n```/);
+  } finally {
+    await rm(worktreesRoot, { recursive: true, force: true }).catch(() => undefined);
+    await rm(runsRoot, { recursive: true, force: true }).catch(() => undefined);
+    if (seedRepoRoot) await rm(seedRepoRoot, { recursive: true, force: true }).catch(() => undefined);
+    if (bareRepoPath) await rm(bareRepoPath, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("deriveGate2OptionsFromRun: planClaim/planDiagram stay undefined for a plan finalized before the claim/diagram schema existed", async () => {
+  const worktreesRoot = await mkdtemp(path.join(tmpdir(), "pros-fromrun-wt4-"));
+  const runsRoot = await mkdtemp(path.join(tmpdir(), "pros-fromrun-runs4-"));
+  const runId = "from-run-no-claim-diagram";
+  let seedRepoRoot: string | undefined;
+  let bareRepoPath: string | undefined;
+
+  try {
+    // No claim/diagram fields at all -- the pre-Phase-5a shape.
+    const seeded = await seedRepoAndRunGate1({
+      runsRoot,
+      worktreesRoot,
+      runId,
+      planStructured: { steps: ["do the thing"], filesTouched: ["widget.ts"], risk: "low" },
+    });
+    seedRepoRoot = seeded.seedRepoRoot;
+    bareRepoPath = seeded.bareRepoPath;
+
+    const opts = await deriveGate2OptionsFromRun({ runsRoot, runId, repoRoot: REPO_ROOT });
+    assert.equal(opts.planClaim, undefined);
+    assert.equal(opts.planDiagram, undefined);
+  } finally {
+    await rm(worktreesRoot, { recursive: true, force: true }).catch(() => undefined);
+    await rm(runsRoot, { recursive: true, force: true }).catch(() => undefined);
+    if (seedRepoRoot) await rm(seedRepoRoot, { recursive: true, force: true }).catch(() => undefined);
+    if (bareRepoPath) await rm(bareRepoPath, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("deriveGate2OptionsFromRun: a non-conforming planClaim (single word, no verb:object shape) flows through buildPrContent without throwing", async () => {
+  const worktreesRoot = await mkdtemp(path.join(tmpdir(), "pros-fromrun-wt5-"));
+  const runsRoot = await mkdtemp(path.join(tmpdir(), "pros-fromrun-runs5-"));
+  const runId = "from-run-bad-claim";
+  let seedRepoRoot: string | undefined;
+  let bareRepoPath: string | undefined;
+
+  try {
+    const seeded = await seedRepoAndRunGate1({
+      runsRoot,
+      worktreesRoot,
+      runId,
+      // A single word can never be reshaped into "verb: object" by
+      // derivePrTitle -- this is exactly the shape that used to be able to
+      // silently start throwing PrTitleValidationError once planClaim got
+      // wired in. buildPrContent must fall back to planMarkdown instead.
+      planStructured: { steps: ["do the thing"], filesTouched: ["widget.ts"], risk: "low", claim: "Done" },
+    });
+    seedRepoRoot = seeded.seedRepoRoot;
+    bareRepoPath = seeded.bareRepoPath;
+
+    const opts = await deriveGate2OptionsFromRun({ runsRoot, runId, repoRoot: REPO_ROOT });
+    assert.equal(opts.planClaim, "Done");
+
+    const verdict = await makeVerdict(seeded.runDir);
+    // Must not throw PrTitleValidationError -- must fall back to planMarkdown's own words.
+    const { title } = buildPrContent({
+      runId,
+      planClaim: opts.planClaim,
+      planMarkdown: opts.planMarkdown,
+      planDiagram: opts.planDiagram,
+      verdict,
+      codexAdvisory: undefined,
+      unresolvedNonBlockers: [],
+    });
+    assert.match(title, /^[a-z][a-z0-9-]*: .+/);
   } finally {
     await rm(worktreesRoot, { recursive: true, force: true }).catch(() => undefined);
     await rm(runsRoot, { recursive: true, force: true }).catch(() => undefined);

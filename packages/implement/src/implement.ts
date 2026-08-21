@@ -12,21 +12,47 @@
  * ever talks to the `ModelSession` it's given, so tests can inject a fake.
  */
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import path from "node:path";
 import { createHash } from "node:crypto";
 import { DEFAULT_SESSION_DIRECTIVE, type ModelSession, type ModelUsage } from "@pros/plan";
-import { loadAgentBriefByName } from "@pros/agents";
+import { loadAgentBrief, loadAgentBriefByName } from "@pros/agents";
 import type { TokenCeiling } from "@pros/lease";
-
-const execFileAsync = promisify(execFile);
-
-async function git(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", args, { cwd, maxBuffer: 64 * 1024 * 1024 });
-  return stdout;
-}
+import { git, checkGitCommitPreflight } from "@pros/barrier";
+import { resolveProjectByRepoRoot, type ValidationCommand } from "./project-config.js";
 
 const SUMMARY_MAX_LEN = 2000;
+
+/**
+ * Always granted, regardless of project: the exact mechanics the scoped-fixer
+ * brief asks every implementer to perform (inspect the tree, stage, commit).
+ * Deliberately NOT `Bash(git *)` -- that would also cover `git push` (the
+ * deterministic orchestrator opens the PR, never the model session; see
+ * pr.ts) and anything else under `git`, including a path to credential
+ * material. Each entry is scoped to one subcommand with a trailing-`*`
+ * prefix match, matching the CLI's documented `Bash(git log *)` pattern
+ * syntax (confirmed against the CLI's own examples -- see claude.ts).
+ */
+const GIT_ALLOWED_TOOLS: string[] = ["Bash(git add *)", "Bash(git commit *)", "Bash(git diff *)", "Bash(git status *)"];
+
+/**
+ * Used only when `resolveProjectByRepoRoot` finds no registered project for
+ * this run's originating repo (an unregistered/ad-hoc target, or a test).
+ * A run that cannot run its own validation commands is useless, so this is
+ * a real, working fallback -- ProsHarness's own two Quick Commands (see
+ * this repo's CLAUDE.md) -- not an empty placeholder. Every use of it is
+ * logged (see the `console.warn` in `runImplementation` below) specifically
+ * so a silent fallback never masquerades as "the right project's commands
+ * ran."
+ */
+const FALLBACK_VALIDATION_COMMANDS: ValidationCommand[] = [
+  { command: "pnpm run typecheck", label: "typecheck (fallback: no project resolved)" },
+  { command: "pnpm run test", label: "test (fallback: no project resolved)" },
+];
+
+/** `Bash(<command> *)` per project command, appended to the always-on git tools. */
+function buildAllowedTools(validationCommands: ValidationCommand[]): string[] {
+  return [...GIT_ALLOWED_TOOLS, ...validationCommands.map((vc) => `Bash(${vc.command} *)`)];
+}
 
 export interface ImplementInput {
   /** Caller passes a real RealClaudeSession() for real runs, a fake for tests. */
@@ -40,12 +66,38 @@ export interface ImplementInput {
   runId: string;
   attemptId: string;
   rawLogPath?: string;
-  /** Where to resolve .claude/agents/scoped-fixer.md from (via loadAgentBriefByName). */
+  /** Where to resolve .claude/agents/scoped-fixer.md from (via loadAgentBriefByName), unless `agentBriefPath` overrides it. */
   repoRoot: string;
+  /**
+   * Named-project generalization of the brief-loading seam: when set,
+   * loaded directly (absolute, or resolved relative to `repoRoot`) instead
+   * of the default `<repoRoot>/.claude/agents/scoped-fixer.md` convention.
+   * Omitted means "use today's default" -- unchanged behavior for a project
+   * that declares no override.
+   */
+  agentBriefPath?: string;
   /** Optional; if given, .record(result.usage) is called after the run -- let TokenCeilingExceededError propagate, it's the caller's job to treat it as "stop the pipeline". */
   tokenCeiling?: TokenCeiling;
-  /** Explicitly carry the Gate 1 permission policy into the fresh implementer context. */
+  /**
+   * Deprecated / ignored. The implement stage now always requests a scoped
+   * `acceptEdits` + `--allowedTools` grant (see `runImplementation` below)
+   * rather than a caller-supplied bypass -- `--dangerously-skip-permissions`
+   * is never emitted from this stage, full stop. Field kept only so
+   * existing callers (e.g. `pipeline.ts`) that still set it continue to
+   * type-check; setting it to `true` no longer does anything here.
+   */
   dangerouslySkipPermissions?: boolean;
+  /**
+   * The actual target repo's root (e.g. `Gate2PipelineOptions.worktreeParentRepo`
+   * -- the repo `git worktree add` branched `worktreePath` from), used to
+   * resolve this run's `ProjectConfig` for its `validationCommands`. This is
+   * DIFFERENT from `repoRoot` above, which is ProsHarness's own installation
+   * root (used only for brief loading) and will almost never match an entry
+   * in `PROJECT_REGISTRY`. Omitted falls back to `repoRoot` for the lookup
+   * (rarely a hit) and then to `FALLBACK_VALIDATION_COMMANDS` if that also
+   * misses -- see the logged warning in `runImplementation`.
+   */
+  projectRepoRoot?: string;
 }
 
 export interface ImplementResult {
@@ -209,7 +261,29 @@ function matchesAllowlist(file: string, allowlist: string[]): boolean {
   return allowlist.some((glob) => globToRegExp(glob).test(file));
 }
 
+/**
+ * Thrown before the model session is even started, when `git commit` in
+ * `worktreePath` would block on interactive signing. Failing fast here
+ * beats letting the scoped-fixer's own `git commit` hang forever inside a
+ * live model process the barrier has no way to distinguish from a slow but
+ * healthy run -- see checkGitCommitPreflight in @pros/barrier for detail.
+ */
+export class GitSigningBlockedError extends Error {
+  constructor(
+    public readonly reason: string,
+    public readonly remedy: string,
+  ) {
+    super(`runImplementation: git commit would block on interactive signing: ${reason}. ${remedy}`);
+    this.name = "GitSigningBlockedError";
+  }
+}
+
 export async function runImplementation(input: ImplementInput): Promise<ImplementResult> {
+  const preflight = await checkGitCommitPreflight(input.worktreePath);
+  if (preflight.blocked) {
+    throw new GitSigningBlockedError(preflight.reason ?? "unknown", preflight.remedy ?? "disable commit.gpgsign for this repo");
+  }
+
   assertImplementationScope(input.fileAllowlist);
   const before = await gitSnapshot(input.worktreePath);
   const preRunWorkingTreeFiles = [...before.status.keys()].sort();
@@ -218,7 +292,9 @@ export async function runImplementation(input: ImplementInput): Promise<Implemen
   }
   const baseSha = before.headSha;
 
-  const brief = await loadAgentBriefByName(input.repoRoot, "scoped-fixer");
+  const brief = input.agentBriefPath
+    ? await loadAgentBrief(path.resolve(input.repoRoot, input.agentBriefPath))
+    : await loadAgentBriefByName(input.repoRoot, "scoped-fixer");
 
   const prompt = [
     brief.systemPrompt,
@@ -233,12 +309,40 @@ export async function runImplementation(input: ImplementInput): Promise<Implemen
     "When you are finished, commit your changes with a single git commit (or a small number of tightly related commits) before finishing. Leave the working tree clean.",
   ].join("\n");
 
+  const projectLookupRoot = input.projectRepoRoot ?? input.repoRoot;
+  const project = resolveProjectByRepoRoot(projectLookupRoot);
+  let validationCommands: ValidationCommand[];
+  if (project) {
+    validationCommands = project.validationCommands;
+  } else {
+    validationCommands = FALLBACK_VALIDATION_COMMANDS;
+    // Never silent: a run that fell through to a hardcoded validation-command
+    // guess is a fact worth surfacing, not something to discover later by
+    // noticing the wrong commands were allowlisted.
+    console.warn(
+      `runImplementation: no ProjectConfig resolved for repo root ${JSON.stringify(projectLookupRoot)} -- ` +
+        `falling back to ProsHarness's own validation commands for --allowedTools ` +
+        `(${FALLBACK_VALIDATION_COMMANDS.map((vc) => vc.command).join(", ")}). ` +
+        `Add an entry to PROJECT_REGISTRY (packages/implement/src/project-config.ts) to grant this project's real commands.`,
+    );
+  }
+  const allowedTools = buildAllowedTools(validationCommands);
+
   const result = await input.claudeSession.run({
     cwd: input.worktreePath,
     prompt,
     attemptId: input.attemptId,
     rawLogPath: input.rawLogPath,
-    dangerouslySkipPermissions: input.dangerouslySkipPermissions,
+    // Never `dangerouslySkipPermissions` here (see the field's doc comment
+    // on ImplementInput) -- a headless implement run gets exactly this
+    // scoped grant instead: `acceptEdits` (auto-approves edits inside
+    // `worktreePath`, which the existing worktree allocation already bounds
+    // -- see packages/worktree/src/allocator.ts) plus an explicit allowlist
+    // of git plumbing + this project's own validation commands. No
+    // `Bash(git push *)` is ever included: the deterministic orchestrator
+    // opens the PR, never the model session (see pr.ts).
+    permissionMode: "acceptEdits",
+    allowedTools,
   });
 
   if (input.tokenCeiling) {

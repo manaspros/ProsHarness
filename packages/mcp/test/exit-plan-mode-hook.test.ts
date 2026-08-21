@@ -4,26 +4,15 @@ import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { Barrier, Journal, loadRunState } from "@pros/barrier";
 import { validateExitPlanModePayload, recordHookPayload } from "../src/exit-plan-mode-hook.js";
+import { makeTempRepo } from "./git-fixture.js";
 
-const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.join(__dirname, "fixtures/hooks");
 
 async function readFixture(name: string): Promise<string> {
   return readFile(path.join(FIXTURES_DIR, name), "utf8");
-}
-
-async function makeTempRepo(): Promise<string> {
-  const dir = await mkdtemp(path.join(tmpdir(), "pros-hook-repo-"));
-  await execFileAsync("git", ["init", "-q"], { cwd: dir });
-  await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
-  await execFileAsync("git", ["config", "user.name", "Test"], { cwd: dir });
-  await execFileAsync("git", ["commit", "--allow-empty", "-q", "-m", "init"], { cwd: dir });
-  return dir;
 }
 
 async function makeRunDir(): Promise<string> {

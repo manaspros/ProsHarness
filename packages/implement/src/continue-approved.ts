@@ -1,6 +1,7 @@
 import path from "node:path";
 import { Journal, loadRunState } from "@pros/barrier";
 import { TokenCeiling } from "@pros/lease";
+import { notificationsEnabledFromEnv } from "@pros/notify";
 import { deriveGate2OptionsFromRun, isGate2AlreadyStarted } from "./from-run.js";
 import { runGate2Pipeline, type Gate2PipelineOptions, type Gate2PipelineResult } from "./pipeline.js";
 
@@ -13,8 +14,20 @@ export interface ContinueApprovedGate2Options {
   maxConcurrent?: number;
   maxTokensPerRun: number;
   ntfyUrl?: string;
-  /** Explicit entry-point policy for the fresh Gate 2 run. */
+  /**
+   * Explicit entry-point policy for the fresh Gate 2 run. Undefined (not
+   * `false`) defers to `PROS_NOTIFICATIONS_ENABLED` via
+   * `notificationsEnabledFromEnv` -- B8: this used to hardcode `?? false`,
+   * silencing the gate even when the operator set the flag. A caller that
+   * wants notifications OFF regardless of the env var (e.g. the dashboard's
+   * "Approve" button, which is deliberately silent -- see
+   * app/api/runs/[runId]/checkpoints/[checkpointId]/answer/route.ts) must
+   * still pass `notificationsEnabled: false` explicitly; that override is
+   * preserved.
+   */
   notificationsEnabled?: boolean;
+  /** Defaults to process.env; injectable for tests so no test depends on real ambient env vars. */
+  env?: NodeJS.ProcessEnv;
   /** Test seam and explicit policy overrides for the fresh Gate 2 context. */
   gate2OptionsOverride?: Partial<Gate2PipelineOptions>;
 }
@@ -67,7 +80,7 @@ export async function runApprovedGate2(opts: ContinueApprovedGate2Options): Prom
   return runGate2Pipeline({
     ...derived,
     reapWorktreeOnSuccess: true,
-    notificationsEnabled: opts.notificationsEnabled ?? false,
+    notificationsEnabled: opts.notificationsEnabled ?? notificationsEnabledFromEnv(opts.env),
     ...opts.gate2OptionsOverride,
   });
 }

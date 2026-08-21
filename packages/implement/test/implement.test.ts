@@ -132,6 +132,163 @@ test("commit touching a file outside the allowlist throws AllowlistViolationErro
   }
 });
 
+/** Captures the prompt it was invoked with, then behaves like CommittingFakeSession. */
+class CapturingFakeSession {
+  readonly provider = "claude" as const;
+  public lastPrompt = "";
+  constructor(
+    private readonly cwd: string,
+    private readonly filename: string,
+  ) {}
+  async run(opts: ModelRunOptions): Promise<ModelRunResult> {
+    this.lastPrompt = opts.prompt;
+    await writeFile(path.join(this.cwd, this.filename), "fix\n");
+    await execFileAsync("git", ["add", "."], { cwd: this.cwd });
+    await execFileAsync("git", ["commit", "-q", "-m", "apply fix"], { cwd: this.cwd });
+    return { text: "Applied the fix.", usage: { inputTokens: 10, outputTokens: 5 } };
+  }
+}
+
+test("agentBriefPath override: a project-declared brief path is loaded instead of the .claude/agents/scoped-fixer.md default", async () => {
+  const repo = await makeRepo();
+  try {
+    // Committed up front (not left untracked) -- CapturingFakeSession commits
+    // via `git add .`, and an untracked custom-brief.md would otherwise show
+    // up in the diff and trip the fileAllowlist check this test isn't about.
+    await writeFile(
+      path.join(repo, "custom-brief.md"),
+      ["---", "name: custom-brief", "model: sonnet", "tools: Edit", "---", "", "MARKER: this is the project's own brief."].join(
+        "\n",
+      ),
+    );
+    await execFileAsync("git", ["add", "."], { cwd: repo });
+    await execFileAsync("git", ["commit", "-q", "-m", "add custom brief"], { cwd: repo });
+
+    const session = new CapturingFakeSession(repo, "fix.txt");
+    await runImplementation({
+      claudeSession: session,
+      worktreePath: repo,
+      branch: "main",
+      planMarkdown: "# Plan",
+      fileAllowlist: ["fix.txt"],
+      runId: "run-brief-override",
+      attemptId: "run-brief-override-implement",
+      repoRoot: repo,
+      agentBriefPath: "custom-brief.md",
+    });
+    assert.match(session.lastPrompt, /MARKER: this is the project's own brief\./);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("agentBriefPath omitted: falls back to today's default .claude/agents/scoped-fixer.md convention (loads ProsHarness's own brief)", async () => {
+  const repo = await makeRepo();
+  try {
+    const session = new CapturingFakeSession(repo, "fix.txt");
+    await runImplementation({
+      claudeSession: session,
+      worktreePath: repo,
+      branch: "main",
+      planMarkdown: "# Plan",
+      fileAllowlist: ["fix.txt"],
+      runId: "run-brief-default",
+      attemptId: "run-brief-default-implement",
+      repoRoot: REPO_ROOT,
+    });
+    assert.match(session.lastPrompt.toLowerCase(), /allowlist/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+/** Captures the full ModelRunOptions it was invoked with, then behaves like CommittingFakeSession. */
+class OptsCapturingFakeSession {
+  readonly provider = "claude" as const;
+  public lastOpts: ModelRunOptions | undefined;
+  constructor(
+    private readonly cwd: string,
+    private readonly filename: string,
+  ) {}
+  async run(opts: ModelRunOptions): Promise<ModelRunResult> {
+    this.lastOpts = opts;
+    await writeFile(path.join(this.cwd, this.filename), "fix\n");
+    await execFileAsync("git", ["add", "."], { cwd: this.cwd });
+    await execFileAsync("git", ["commit", "-q", "-m", "apply fix"], { cwd: this.cwd });
+    return { text: "Applied the fix.", usage: { inputTokens: 10, outputTokens: 5 } };
+  }
+}
+
+/**
+ * Phase 2 (headless implement permission grant): proves `runImplementation`
+ * requests the scoped `acceptEdits`/`allowedTools` grant on the
+ * `ModelSession` it drives -- NEVER `dangerouslySkipPermissions` -- and that
+ * an unregistered project repo root falls back to (rather than silently
+ * omitting) ProsHarness's own validation commands.
+ */
+test("runImplementation requests acceptEdits + allowedTools on the session, never dangerouslySkipPermissions, and falls back to ProsHarness's own validation commands for an unregistered project", async () => {
+  const repo = await makeRepo();
+  try {
+    const session = new OptsCapturingFakeSession(repo, "fix.txt");
+    await runImplementation({
+      claudeSession: session,
+      worktreePath: repo,
+      branch: "main",
+      planMarkdown: "# Plan",
+      fileAllowlist: ["fix.txt"],
+      runId: "run-perm-1",
+      attemptId: "run-perm-1-implement",
+      repoRoot: REPO_ROOT,
+      projectRepoRoot: repo, // a throwaway temp-dir repo is never in PROJECT_REGISTRY -> fallback path
+    });
+
+    assert.equal(session.lastOpts?.permissionMode, "acceptEdits");
+    assert.equal(session.lastOpts?.dangerouslySkipPermissions, undefined);
+    const tools = session.lastOpts?.allowedTools ?? [];
+    for (const gitTool of ["Bash(git add *)", "Bash(git commit *)", "Bash(git diff *)", "Bash(git status *)"]) {
+      assert.ok(tools.includes(gitTool), `expected ${gitTool} in allowedTools, got: ${JSON.stringify(tools)}`);
+    }
+    assert.ok(!tools.some((t) => t.includes("git push")), "must never grant git push to the model session");
+    // Fallback validation commands (ProsHarness's own), since `repo` (a
+    // throwaway temp dir) resolves to no PROJECT_REGISTRY entry.
+    assert.ok(tools.includes("Bash(pnpm run typecheck *)"), `expected fallback typecheck command in: ${JSON.stringify(tools)}`);
+    assert.ok(tools.includes("Bash(pnpm run test *)"), `expected fallback test command in: ${JSON.stringify(tools)}`);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+/** A registered PROJECT_REGISTRY project's own validationCommands reach --allowedTools instead of the fallback. */
+test("runImplementation: a resolved project's validationCommands reach allowedTools instead of the fallback", async () => {
+  const repo = await makeRepo();
+  try {
+    const session = new OptsCapturingFakeSession(repo, "fix.txt");
+    // "agent-gateway"'s registered repoRoot won't match `repo`, so instead
+    // resolve via a real registered repoRoot to prove the non-fallback path
+    // reads PROJECT_REGISTRY's actual commands, not the hardcoded fallback.
+    const { PROJECT_REGISTRY } = await import("../src/project-config.js");
+    const agentGateway = PROJECT_REGISTRY.find((p) => p.name === "agent-gateway")!;
+    await runImplementation({
+      claudeSession: session,
+      worktreePath: repo,
+      branch: "main",
+      planMarkdown: "# Plan",
+      fileAllowlist: ["fix.txt"],
+      runId: "run-perm-2",
+      attemptId: "run-perm-2-implement",
+      repoRoot: REPO_ROOT,
+      projectRepoRoot: agentGateway.repoRoot,
+    });
+
+    const tools = session.lastOpts?.allowedTools ?? [];
+    assert.ok(tools.includes("Bash(just verify *)"), `expected agent-gateway's own command in: ${JSON.stringify(tools)}`);
+    assert.ok(tools.includes("Bash(cargo test --locked *)"), `expected agent-gateway's own command in: ${JSON.stringify(tools)}`);
+    assert.ok(!tools.includes("Bash(pnpm run test *)"), "must not fall back once a real project resolves");
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
 test("tokenCeiling exceeded propagates TokenCeilingExceededError", async () => {
   const repo = await makeRepo();
   try {

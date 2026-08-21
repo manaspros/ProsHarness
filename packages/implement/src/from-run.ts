@@ -45,6 +45,13 @@
  * isn't a usable non-empty string array, Gate 2 is refused. Treating a
  * missing/malformed scope as unrestricted would be fail-open.
  *
+ * `planClaim` / `planDiagram`: the SAME `structuredJson` blob as
+ * `fileAllowlist` above, read for its `.claim`/`.diagram` string fields
+ * (Phase 5a, packages/plan/src/plan.ts). Undefined -- never a placeholder --
+ * when the entry predates that schema, doesn't parse, or the field is blank;
+ * `Gate2PipelineOptions`'s own doc comments (and `buildPrContent`) already
+ * specify graceful degradation for exactly that case.
+ *
  * `repoRoot` (for loading `.claude/agents`/`.claude/skills` briefs): this is
  * NOT the originating target repo -- it's ProsHarness's own installation
  * root, exactly as `Gate2PipelineOptions`'s doc comment specifies. Callers
@@ -56,19 +63,10 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { Journal, loadRunState } from "@pros/barrier";
+import { Journal, loadRunState, git } from "@pros/barrier";
 import type { TokenCeiling } from "@pros/lease";
 import { assertImplementationScope, InvalidFileAllowlistError } from "./implement.js";
 import type { Gate2PipelineOptions } from "./pipeline.js";
-
-const execFileAsync = promisify(execFile);
-
-async function git(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", args, { cwd, maxBuffer: 64 * 1024 * 1024 });
-  return stdout.trim();
-}
 
 export interface DeriveGate2OptionsInput {
   runsRoot: string;
@@ -142,7 +140,12 @@ export async function deriveGate2OptionsFromRun(opts: DeriveGate2OptionsInput): 
     );
   }
 
-  const baseBranch = await git(worktreeParentRepo, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  // `.trim()` at the call site, matching every other single-line `git rev-parse`
+  // read in this codebase (implement.ts, allocator.ts, manifest.ts all do the
+  // same) -- `git`/`runGit` (@pros/barrier) intentionally return raw stdout
+  // unmodified since some callers (e.g. multi-line `git diff --name-only`)
+  // need it untouched, so trimming is each single-line caller's own job.
+  const baseBranch = (await git(worktreeParentRepo, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
 
   const planContentEntry = (
     finalizedEntry.version === 1
@@ -161,10 +164,29 @@ export async function deriveGate2OptionsFromRun(opts: DeriveGate2OptionsInput): 
     );
   }
 
+  // `claim`/`diagram` (Phase 5a, packages/plan/src/plan.ts's structured plan
+  // schema) are read from the SAME structuredJson blob as fileAllowlist --
+  // this is the journal's own durable record of the finalized plan, not a
+  // re-parse of plan.md and not a read through @pros/index's rebuildable
+  // SQLite projection (that projection exists for dashboard display, not for
+  // reconstructing pipeline inputs). Both stay undefined -- never a
+  // synthesized placeholder -- when the field is blank or absent.
   let fileAllowlist: unknown;
+  let planClaim: string | undefined;
+  let planDiagram: string | undefined;
   try {
-    const structured = JSON.parse(planContentEntry.structuredJson) as { filesTouched?: unknown };
+    const structured = JSON.parse(planContentEntry.structuredJson) as {
+      filesTouched?: unknown;
+      claim?: unknown;
+      diagram?: unknown;
+    };
     fileAllowlist = structured.filesTouched;
+    if (typeof structured.claim === "string" && structured.claim.trim().length > 0) {
+      planClaim = structured.claim;
+    }
+    if (typeof structured.diagram === "string" && structured.diagram.trim().length > 0) {
+      planDiagram = structured.diagram;
+    }
   } catch {
     throw new InvalidFileAllowlistError(undefined, "the approved plan structuredJson is malformed");
   }
@@ -181,6 +203,8 @@ export async function deriveGate2OptionsFromRun(opts: DeriveGate2OptionsInput): 
     repoRoot: opts.repoRoot,
     planMarkdown,
     fileAllowlist,
+    planClaim,
+    planDiagram,
     leaseDir: opts.leaseDir,
     maxConcurrent: opts.maxConcurrent,
     tokenCeiling: opts.tokenCeiling,

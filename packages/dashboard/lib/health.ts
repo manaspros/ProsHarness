@@ -66,6 +66,16 @@ export const KNOWN_JOURNAL_KINDS: ReadonlySet<string> = new Set([
   "review_completed",
   "pr_create_intent",
   "pr_created",
+  // Phase 3: one event per harness-spawned validation command (packages/
+  // implement's verify.ts / pipeline.ts) -- see packages/implement/src/
+  // validation-commands.ts's CheckResult for the shape this is derived from.
+  "validation_command_run",
+  // Phase 6: the SEPARATE, advisory-only Codex pass (packages/implement's
+  // review.ts's runCodexAdvisoryReview, wired in pipeline.ts) -- distinct
+  // from "review_completed" above, which is the still-gating claude+codex
+  // objections review. Never gates anything; status is one of
+  // "reviewed_no_blocker" | "reviewed_blocker" | "unavailable".
+  "codex_advisory_review",
 ]);
 
 export interface HealthIssue {

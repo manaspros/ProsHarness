@@ -22,6 +22,7 @@ import {
   makeTriggerSweepJob,
   startSchedulerLoop,
 } from "@pros/schedule";
+import { notificationsEnabledFromEnv } from "@pros/implement";
 
 export interface ScheduleArgs {
   pollIntervalMs?: number;
@@ -121,7 +122,9 @@ export function buildScheduledJobs(env: NodeJS.ProcessEnv = process.env) {
     runsRoot: dirs.runsRoot,
     maxTokensPerRun,
     ntfyUrl: env.PROS_NTFY_URL,
-    notificationsEnabled: false,
+    // B8: was hardcoded `false` -- the ambient trigger sweep ran unattended
+    // and could never notify anyone. Deferring to PROS_NOTIFICATIONS_ENABLED.
+    notificationsEnabled: notificationsEnabledFromEnv(env),
   });
 
   const skillrankJob = makeSkillrankWeeklyJob({
@@ -140,7 +143,9 @@ export function buildScheduledJobs(env: NodeJS.ProcessEnv = process.env) {
     maxConcurrent,
     maxTokensPerRun,
     ntfyUrl: env.PROS_NTFY_URL,
-    notificationsEnabled: false,
+    // Same B8 fix as triggerSweepJob above -- this is the job that resumes
+    // Gate 2 after an approval, exactly the "left unattended" case B8 is for.
+    notificationsEnabled: notificationsEnabledFromEnv(env),
     intervalMs: env.PROS_GATE1_CONTINUATION_INTERVAL_MS ? Number(env.PROS_GATE1_CONTINUATION_INTERVAL_MS) : undefined,
   });
 

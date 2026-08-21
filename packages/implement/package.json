@@ -15,7 +15,9 @@
     "@pros/agents": "workspace:*",
     "@pros/lease": "workspace:*",
     "@pros/barrier": "workspace:*",
-    "@pros/notify": "workspace:*"
+    "@pros/notify": "workspace:*",
+    "@pros/adapters": "workspace:*",
+    "@pros/review": "workspace:*"
   },
   "devDependencies": {
     "tsx": "^4.19.0",

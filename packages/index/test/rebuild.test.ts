@@ -399,3 +399,73 @@ test("index is fully rebuildable from the journal alone", async () => {
     await cleanup(runsRoot);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Phase 3: validation_command_run -> validation_checks
+// ---------------------------------------------------------------------------
+
+test("rebuild: validation_command_run journal entries project into validation_checks with exit codes preserved", async () => {
+  const runsRoot = await makeTempDir("pros-idx-runs-");
+  const dbDir = await makeTempDir("pros-idx-db-");
+  try {
+    const runId = "run-vcr";
+    const runDir = path.join(runsRoot, runId);
+    const j = await Journal.open(runDir);
+    // Same tolerant, off-union `as any` write pipeline.ts itself uses for
+    // this event kind (it isn't a member of @pros/barrier's JournalEntry
+    // union -- see pipeline.ts's file doc comment).
+    await j.append({
+      runId,
+      fenceEpoch: 0,
+      kind: "validation_command_run",
+      attemptId: `${runId}-verify`,
+      command: "pnpm run typecheck",
+      label: "typecheck",
+      role: "gate",
+      exitCode: 0,
+      timedOut: false,
+      durationMs: 1234,
+      outputTail: "tsc found no errors",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    await j.append({
+      runId,
+      fenceEpoch: 0,
+      kind: "validation_command_run",
+      attemptId: `${runId}-verify`,
+      command: "pnpm run test",
+      label: "test",
+      role: "gate",
+      exitCode: 1,
+      timedOut: false,
+      durationMs: 5678,
+      outputTail: "1 failing",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    await j.close();
+
+    const dbPath = path.join(dbDir, "index.sqlite");
+    const report = await rebuildIndex(dbPath, runsRoot);
+    assert.equal(report.validationChecksInserted, 2);
+
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      const rows = db.prepare("SELECT * FROM validation_checks WHERE run_id = ? ORDER BY seq").all(runId) as any[];
+      assert.equal(rows.length, 2);
+      assert.equal(rows[0].command, "pnpm run typecheck");
+      assert.equal(rows[0].exit_code, 0);
+      assert.equal(rows[0].timed_out, 0);
+      assert.equal(rows[1].command, "pnpm run test");
+      assert.equal(rows[1].exit_code, 1);
+      assert.equal(rows[1].output_tail, "1 failing");
+
+      // Also captured generically in `events` (payload_json), same as every other kind -- validation_checks is additive, not a replacement.
+      const eventsRows = db.prepare("SELECT kind FROM events WHERE run_id = ? AND kind = 'validation_command_run'").all(runId) as any[];
+      assert.equal(eventsRows.length, 2);
+    } finally {
+      db.close();
+    }
+  } finally {
+    await cleanup(runsRoot);
+  }
+});
