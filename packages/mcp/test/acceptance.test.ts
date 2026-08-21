@@ -7,6 +7,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { Barrier, Journal, readManifest } from "@pros/barrier";
+import { makeTempRepo } from "./git-fixture.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -18,15 +19,6 @@ const MCP_PACKAGE_ROOT = path.join(__dirname, "..");
 // directly while building this test (docs/04-m1-implementation-log.md).
 // tsx's own binary path carries no such dependency on the spawn cwd.
 const TSX_BIN = path.join(MCP_PACKAGE_ROOT, "node_modules/.bin/tsx");
-
-async function makeTempRepo(): Promise<string> {
-  const dir = await mkdtemp(path.join(tmpdir(), "pros-acceptance-repo-"));
-  await execFileAsync("git", ["init", "-q"], { cwd: dir });
-  await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
-  await execFileAsync("git", ["config", "user.name", "Test"], { cwd: dir });
-  await execFileAsync("git", ["commit", "--allow-empty", "-q", "-m", "init"], { cwd: dir });
-  return dir;
-}
 
 /**
  * First-commit acceptance test (docs/03-architecture.md / the M1 plan),

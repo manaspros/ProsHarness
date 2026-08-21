@@ -1,10 +1,11 @@
 import * as React from "react";
 import Link from "next/link";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Radio } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Surface } from "@/components/Surface";
 import { StatusPill, type Status } from "@/components/StatusPill";
+import type { LivenessLabel } from "@/lib/run-status";
 
 export interface BoardCardData {
   runId: string;
@@ -17,6 +18,8 @@ export interface BoardCardData {
   hasMajorUnresolvedObjection: boolean;
   relativeTime: string | undefined;
   fenceEpoch: number;
+  /** B9: "active" | "stale" | "n/a" -- see lib/run-status.ts's deriveLiveness. Only meaningful while a run has a live attempt; "n/a" for every other stage (no live attempt to be stale). */
+  liveness: LivenessLabel;
 }
 
 /**
@@ -61,6 +64,15 @@ export const BoardCard = React.forwardRef<HTMLAnchorElement, { data: BoardCardDa
 
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
             <StatusPill status={data.pillStatus} label={data.pillLabel} />
+            {data.liveness === "stale" && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full bg-status-fail/15 px-2 py-0.5 text-[11px] font-semibold text-status-fail"
+                title="No new output written to this run's log in a while -- it may be wedged on a tool call rather than actually running."
+              >
+                <Radio className="h-3 w-3" />
+                possibly wedged
+              </span>
+            )}
             {data.unresolvedObjectionCount > 0 && (
               <span
                 className={cn(

@@ -8,17 +8,9 @@ import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { Barrier } from "@pros/barrier";
 import { submitPlan } from "../src/submit-plan.js";
+import { makeTempRepo } from "./git-fixture.js";
 
 const execFileAsync = promisify(execFile);
-
-async function makeTempRepo(): Promise<string> {
-  const dir = await mkdtemp(path.join(tmpdir(), "pros-mcp-repo-"));
-  await execFileAsync("git", ["init", "-q"], { cwd: dir });
-  await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
-  await execFileAsync("git", ["config", "user.name", "Test"], { cwd: dir });
-  await execFileAsync("git", ["commit", "--allow-empty", "-q", "-m", "init"], { cwd: dir });
-  return dir;
-}
 
 test("submit_plan: never resolves, and durably records a plan_approval checkpoint_requested entry", async () => {
   const repo = await makeTempRepo();

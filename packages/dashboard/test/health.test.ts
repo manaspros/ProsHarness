@@ -66,3 +66,29 @@ test("unknownJournalKinds: filters out everything in KNOWN_JOURNAL_KINDS", () =>
 test("unknownJournalKinds: empty when every kind present is known", () => {
   assert.deepEqual(unknownJournalKinds(["attempt_started", "parked", "plan_edited"]), []);
 });
+
+// --- Phase 3: validation_command_run ---------------------------------------
+
+test("validation_command_run (Phase 3's harness-spawned check event) is a recognized journal kind", () => {
+  assert.ok(KNOWN_JOURNAL_KINDS.has("validation_command_run"));
+  assert.deepEqual(unknownJournalKinds(["validation_command_run"]), []);
+});
+
+// --- Phase 6: codex_advisory_review -----------------------------------------
+
+test("codex_advisory_review (Phase 6's advisory-only Codex pass) is a recognized journal kind", () => {
+  assert.ok(KNOWN_JOURNAL_KINDS.has("codex_advisory_review"));
+  assert.deepEqual(unknownJournalKinds(["codex_advisory_review"]), []);
+});
+
+test("LOAD-BEARING INVARIANT: an unrecognized kind is unhealthy even when every other kind present -- including the new validation_command_run -- is known", () => {
+  // Exercises the exact mechanism app/runs/[runId]/page.tsx uses: build a
+  // HealthIssue per kind unknownJournalKinds() flags, then isHealthy() on
+  // the full issue list. This must never quietly start reporting healthy
+  // just because this phase extended KNOWN_JOURNAL_KINDS.
+  const present = [...KNOWN_JOURNAL_KINDS, "a_kind_nobody_registered"];
+  const unknown = unknownJournalKinds(present);
+  assert.deepEqual(unknown, ["a_kind_nobody_registered"]);
+  const issues = unknown.map((k) => ({ kind: "unknown_journal_kind" as const, detail: `unrecognized journal kind: ${k}` }));
+  assert.equal(isHealthy(issues), false, "an unrecognized kind must surface as unhealthy, never silently pass through");
+});

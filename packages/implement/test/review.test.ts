@@ -93,6 +93,69 @@ test("Codex returns one blocker -> blockers-present, blocker is in unresolvedBlo
   }
 });
 
+/** Records the shared prefix of every prompt it's invoked with, since runAdversarialReview issues two calls per session. */
+class CapturingObjectionsSession {
+  readonly provider: "claude" | "codex";
+  public prompts: string[] = [];
+  constructor(provider: "claude" | "codex") {
+    this.provider = provider;
+  }
+  async run(opts: ModelRunOptions): Promise<ModelRunResult> {
+    this.prompts.push(opts.prompt);
+    return { text: JSON.stringify({ objections: [] }), usage: { inputTokens: 10, outputTokens: 10 } };
+  }
+}
+
+test("reviewSkillPath override: a project-declared skill path is loaded instead of the .claude/skills/review/SKILL.md default", async () => {
+  const { dir, baseSha, headSha } = await makeRepoWithDiff();
+  try {
+    await writeFile(
+      path.join(dir, "custom-review.md"),
+      ["---", "name: custom-review", "---", "", "MARKER: this is the project's own review skill."].join("\n"),
+    );
+    const claudeSession = new CapturingObjectionsSession("claude");
+    await runAdversarialReview({
+      claudeSession,
+      codexSession: new JsonObjectionsSession("codex", []),
+      worktreePath: dir,
+      repoRoot: dir,
+      reviewSkillPath: "custom-review.md",
+      baseSha,
+      headSha,
+      planMarkdown: "# Plan",
+      runId: "run-skill-override",
+      attemptIdPrefix: "run-skill-override",
+    });
+    assert.ok(
+      claudeSession.prompts.some((p) => p.includes("MARKER: this is the project's own review skill.")),
+      "expected at least one prompt to embed the custom skill's body",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("reviewSkillPath omitted: falls back to today's default .claude/skills/review/SKILL.md convention", async () => {
+  const { dir, baseSha, headSha } = await makeRepoWithDiff();
+  try {
+    const claudeSession = new CapturingObjectionsSession("claude");
+    await runAdversarialReview({
+      claudeSession,
+      codexSession: new JsonObjectionsSession("codex", []),
+      worktreePath: dir,
+      repoRoot: REPO_ROOT,
+      baseSha,
+      headSha,
+      planMarkdown: "# Plan",
+      runId: "run-skill-default",
+      attemptIdPrefix: "run-skill-default",
+    });
+    assert.ok(claudeSession.prompts.some((p) => p.toLowerCase().includes("ultrareview")));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("only minor/major objections from either pass -> still approve", async () => {
   const { dir, baseSha, headSha } = await makeRepoWithDiff();
   try {

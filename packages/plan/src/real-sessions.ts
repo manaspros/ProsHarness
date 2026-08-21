@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { spawnClaude, spawnCodex, type ParsedEvent } from "@pros/adapters";
+import { spawnClaude, spawnCodex, buildHookSpawnExtraArgs, type ParsedEvent } from "@pros/adapters";
 import type { ModelRunOptions, ModelRunResult, ModelSession, ModelUsage } from "./model-session.js";
 
 /** Drain an adapter's async-iterable event stream to completion, keeping every event seen. */
@@ -66,16 +66,29 @@ export class RealClaudeSession implements ModelSession {
   async run(opts: ModelRunOptions): Promise<ModelRunResult> {
     const extraArgs: string[] = [];
     if (opts.schema) extraArgs.push("--json-schema", JSON.stringify(opts.schema));
+    // B9 piece 3: every real Claude spawn funnels through here (finding,
+    // draft, critique, implement, ultrareview), so this is the one place
+    // that needs to opt every harness session into hook-derived activity
+    // state. Scoped to THIS spawn only -- see hook-catalog.ts's file
+    // comment for why this never touches the user's global settings.
+    extraArgs.push(...buildHookSpawnExtraArgs());
     await prepareRawLog(opts.rawLogPath, "claude");
 
     const { events, exitCode, stderr } = spawnClaude({
       cwd: opts.cwd,
       prompt: opts.prompt,
       resumeSessionId: opts.resumeSessionId,
-      // All dashboard/CLI Claude sessions are unattended. Keep this policy
-      // at the real-session boundary so newly-added callers cannot
-      // accidentally reintroduce an approval prompt that stalls a run.
-      dangerouslySkipPermissions: true,
+      // All dashboard/CLI Claude sessions are unattended, so SOME permission
+      // policy must always be set here -- never fall through to the CLI's
+      // own Manual-mode default, which would block the first edit/bash call
+      // on an approval nobody is present to give. Callers that pass an
+      // explicit scoped grant (`permissionMode`/`allowedTools` -- today:
+      // the implement stage, see @pros/implement's implement.ts) get exactly
+      // that instead of a full bypass; every other caller keeps today's
+      // `dangerouslySkipPermissions: true` default unchanged.
+      dangerouslySkipPermissions: opts.permissionMode || opts.allowedTools ? undefined : true,
+      permissionMode: opts.permissionMode,
+      allowedTools: opts.allowedTools,
       extraArgs,
       rawLogPath: opts.rawLogPath,
       attemptId: opts.attemptId,

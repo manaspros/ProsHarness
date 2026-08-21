@@ -34,10 +34,33 @@ export function parseClaudeLine(raw: string, seq: number): ParsedEvent {
   return { provider: "claude", seq, raw, parseStatus: "unknown_type", type, data };
 }
 
-export function buildClaudeArgs(opts: Pick<SpawnOptions, "resumeSessionId" | "dangerouslySkipPermissions" | "extraArgs">): string[] {
+export function buildClaudeArgs(
+  opts: Pick<
+    SpawnOptions,
+    "resumeSessionId" | "dangerouslySkipPermissions" | "extraArgs" | "permissionMode" | "allowedTools"
+  >,
+): string[] {
   const args = ["-p", "--output-format", "stream-json", "--verbose"];
+  // `dangerouslySkipPermissions` and the scoped `permissionMode`/`allowedTools`
+  // grant are mutually exclusive by construction: a full bypass makes an
+  // allowlist meaningless, and this branching is also what makes the
+  // "never emit --dangerously-skip-permissions for a scoped grant" security
+  // property hold structurally rather than by caller discipline alone.
   if (opts.dangerouslySkipPermissions) {
     args.push("--dangerously-skip-permissions");
+  } else {
+    if (opts.permissionMode) {
+      args.push("--permission-mode", opts.permissionMode);
+    }
+    if (opts.allowedTools && opts.allowedTools.length > 0) {
+      // `--allowedTools` is a real CLI variadic flag (confirmed via
+      // `claude --help` on 2.1.232: "--allowedTools, --allowed-tools <tools...>
+      // Comma or space-separated list of tool names to allow (e.g. "Bash(git *)
+      // Edit")"); each pattern is one argv element -- spawn() never re-splits
+      // these on whitespace, so a pattern like "Bash(git commit *)" survives
+      // as a single tool name intact.
+      args.push("--allowedTools", ...opts.allowedTools);
+    }
   }
   if (opts.resumeSessionId) {
     args.push("--resume", opts.resumeSessionId);

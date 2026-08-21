@@ -26,6 +26,21 @@ export interface SpawnOptions {
   resumeSessionId?: string; // claude session id or codex thread id
   /** Permission bypass requested for an unattended model session. */
   dangerouslySkipPermissions?: boolean;
+  /**
+   * Claude-only scoped alternative to `dangerouslySkipPermissions`: starts the
+   * session in `--permission-mode acceptEdits` (auto-approves edits inside
+   * the session's own working directory, never a full bypass) instead of
+   * `--dangerously-skip-permissions`. Ignored when `dangerouslySkipPermissions`
+   * is set -- see `buildClaudeArgs` for precedence.
+   */
+  permissionMode?: "acceptEdits";
+  /**
+   * Claude-only: exact `--allowedTools` patterns (e.g. `"Bash(git commit *)"`)
+   * to auto-approve without a prompt, on top of whatever `permissionMode`
+   * grants. Meaningless without `permissionMode` since a bypassed session
+   * needs no allowlist and a Manual-mode session ignores it.
+   */
+  allowedTools?: string[];
   extraArgs?: string[]; // e.g. ["--json-schema", schemaJson] / ["--output-schema", path]
   env?: Record<string, string>;
   rawLogPath?: string; // if set, append every raw line here as it arrives (verbatim bytes, newline-delimited) — feeds packages/index's SQLite raw_events indexer (a separate package that tails these files, at-least-once, deduping by (attemptId, seq)). We only need to WRITE correctly (append, one line per event); fsync is not required here.

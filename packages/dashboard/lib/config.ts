@@ -12,6 +12,26 @@
  * following the same `<HOME>/.pros/*` convention as runs/worktrees.
  */
 import path from "node:path";
+import { PROJECT_REGISTRY, resolveProjectByName, resolveProjectByRepoRoot, type ProjectConfig } from "@pros/implement";
+
+/**
+ * Named-project lookup for the dashboard boundary. Re-exported (rather than
+ * having callers import `@pros/implement` directly) so this file stays the
+ * single place dashboard code goes for "how do I resolve a repo/run target,"
+ * matching the rest of this module's role.
+ *
+ * NOTE: the actual route wiring (`app/api/new/launch/route.ts` and friends)
+ * is NOT done in this change -- those files are currently modified in the
+ * working tree by a concurrent change and are out of scope here. This only
+ * adds the resolution helper; wiring it into the launch route is a follow-up.
+ */
+export function resolveProject(nameOrRepoRoot: string): ProjectConfig | undefined {
+  return resolveProjectByName(nameOrRepoRoot) ?? resolveProjectByRepoRoot(nameOrRepoRoot);
+}
+
+export function listProjects(): ProjectConfig[] {
+  return PROJECT_REGISTRY;
+}
 
 /**
  * The dashboard is normally started from either the repository root or

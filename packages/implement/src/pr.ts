@@ -71,6 +71,7 @@ import { promisify } from "node:util";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { runGit } from "@pros/barrier";
 
 const execFileAsync = promisify(execFile);
 
@@ -262,7 +263,7 @@ export class RealGhClient implements GhClient {
     }
     const number = Number(match[1]);
 
-    const { stdout: shaOut } = await execFileAsync("git", ["rev-parse", input.branch], { cwd: input.cwd });
+    const { stdout: shaOut } = await runGit(["rev-parse", input.branch], { cwd: input.cwd });
     const headSha = shaOut.trim();
 
     return { url, number, headSha };
@@ -440,7 +441,7 @@ export class AmbientGhClient implements GhClient {
     }
     const number = Number(match[1]);
 
-    const { stdout: shaOut } = await execFileAsync("git", ["rev-parse", input.branch], { cwd: input.cwd });
+    const { stdout: shaOut } = await runGit(["rev-parse", input.branch], { cwd: input.cwd });
     const headSha = shaOut.trim();
 
     return { url, number, headSha };

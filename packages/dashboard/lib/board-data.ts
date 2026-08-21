@@ -14,6 +14,22 @@
  *     finding/investigating before a plan exists" vs "plan drafted but not
  *     yet finalized" -- both collapse to "idle" in RunState terms because
  *     plan drafting/critique isn't attempt/checkpoint activity.
+ *   - Note on a stage bucket ("implementing"/etc.) vs LIVENESS (added for
+ *     B9, see lib/liveness-io.ts's `getRawLogMtimeMs` and run-status.ts's
+ *     `deriveLiveness`/`STALE_RAW_LOG_THRESHOLD_MS`): a bucket answers
+ *     "which pipeline phase is this run in," a journal-only question.
+ *     Liveness answers a DIFFERENT question this file previously had no way
+ *     to answer at all -- "is the live subprocess for that phase still
+ *     actually producing output, or did it wedge mid-tool-call" -- because
+ *     that requires reading raw.log's mtime off disk, not just replaying
+ *     the journal. The two are orthogonal and both surfaced on the board
+ *     card; neither subsumes the other. `getRawLogMtimeMs` lives in its own
+ *     file (not here) specifically because THIS file's pure types
+ *     (`BoardStage` etc.) are imported by a "use client" component
+ *     (components/board/BoardClient.tsx) -- a `node:fs` import anywhere in
+ *     this file breaks the client bundle (verified: `pnpm run build` failed
+ *     with a webpack `UnhandledSchemeError` on `node:fs/promises` the first
+ *     time this I/O helper was added directly here).
  *   - Whether a verify_verdict / review_completed / pr_created event exists
  *     (Gate 2 events -- see lib/review-data.ts's file comment for why these
  *     live in the `events` table under those exact `kind` values). These

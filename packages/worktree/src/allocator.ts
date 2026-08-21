@@ -39,16 +39,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, open, rename, readdir, rm, stat, realpath } from "node:fs/promises";
 import path from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { Journal, loadRunState, type JournalEntry } from "@pros/barrier";
-
-const execFileAsync = promisify(execFile);
-
-async function git(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", args, { cwd, maxBuffer: 64 * 1024 * 1024 });
-  return stdout;
-}
+import { Journal, loadRunState, git, runGit, type JournalEntry } from "@pros/barrier";
 
 /** Branch/path name components must not carry slashes, spaces, etc. from a caller-supplied runId. */
 function sanitizeSegment(s: string): string {
@@ -182,7 +173,7 @@ export class WorktreeAllocator {
     // 2. Act -- if this throws, we deliberately append nothing: the bare
     // intent is left for reconcile to classify (see reconcile() below).
     await mkdir(this.opts.worktreesRoot, { recursive: true });
-    await execFileAsync("git", ["worktree", "add", "-b", branch, worktreePath, opts.baseRef ?? "HEAD"], {
+    await runGit(["worktree", "add", "-b", branch, worktreePath, opts.baseRef ?? "HEAD"], {
       cwd: this.opts.repoRoot,
     });
     if (opts.crashAfter === "act") throw new AllocationCrashInjected(allocationId, "act");
@@ -235,7 +226,7 @@ export class WorktreeAllocator {
 
   private async branchExists(repoRoot: string, branch: string): Promise<boolean> {
     try {
-      await execFileAsync("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: repoRoot });
+      await runGit(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: repoRoot });
       return true;
     } catch {
       return false;
@@ -244,18 +235,18 @@ export class WorktreeAllocator {
 
   private async removeWorktreeForcibly(repoRoot: string, worktreePath: string): Promise<void> {
     try {
-      await execFileAsync("git", ["worktree", "remove", "--force", worktreePath], { cwd: repoRoot });
+      await runGit(["worktree", "remove", "--force", worktreePath], { cwd: repoRoot });
     } catch {
       // git lost track of this path entirely (e.g. a crash left a garbage
       // directory in its place rather than a real worktree link) -- prune
       // git's own bookkeeping and remove the directory by hand.
-      await execFileAsync("git", ["worktree", "prune"], { cwd: repoRoot }).catch(() => undefined);
+      await runGit(["worktree", "prune"], { cwd: repoRoot }).catch(() => undefined);
       await rm(worktreePath, { recursive: true, force: true });
     }
   }
 
   private async deleteBranch(repoRoot: string, branch: string): Promise<void> {
-    await execFileAsync("git", ["branch", "-D", branch], { cwd: repoRoot }).catch(() => undefined);
+    await runGit(["branch", "-D", branch], { cwd: repoRoot }).catch(() => undefined);
   }
 
   /**

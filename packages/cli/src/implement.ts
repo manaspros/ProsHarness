@@ -12,7 +12,7 @@
 import path from "node:path";
 import { loadRunState } from "@pros/barrier";
 import { TokenCeiling } from "@pros/lease";
-import { deriveGate2OptionsFromRun, isGate2AlreadyStarted, runGate2Pipeline } from "@pros/implement";
+import { deriveGate2OptionsFromRun, isGate2AlreadyStarted, notificationsEnabledFromEnv, runGate2Pipeline } from "@pros/implement";
 
 export interface ImplementArgs {
   runId: string;
@@ -91,7 +91,11 @@ export async function runImplementCommand(
   const result = await runGate2Pipeline({
     ...derived,
     reapWorktreeOnSuccess: true,
-    notificationsEnabled: opts.notificationsEnabled ?? false,
+    // B8: was hardcoded `?? false`. `opts.notificationsEnabled` remains an
+    // explicit override seam for tests/library callers; the real CLI entry
+    // point (main.ts) doesn't pass one, so it now defers to
+    // PROS_NOTIFICATIONS_ENABLED instead of being permanently silent.
+    notificationsEnabled: opts.notificationsEnabled ?? notificationsEnabledFromEnv(env),
   });
 
   if (result.pr) {

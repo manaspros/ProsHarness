@@ -57,18 +57,9 @@
 
 import path from "node:path";
 import { readFile } from "node:fs/promises";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { Journal, loadRunState } from "@pros/barrier";
+import { Journal, loadRunState, git } from "@pros/barrier";
 import type { TokenCeiling } from "@pros/lease";
 import type { Gate2PipelineOptions } from "./pipeline.js";
-
-const execFileAsync = promisify(execFile);
-
-async function git(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", args, { cwd, maxBuffer: 64 * 1024 * 1024 });
-  return stdout.trim();
-}
 
 export interface DeriveGate2OptionsInput {
   runsRoot: string;
@@ -142,7 +133,12 @@ export async function deriveGate2OptionsFromRun(opts: DeriveGate2OptionsInput): 
     );
   }
 
-  const baseBranch = await git(worktreeParentRepo, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  // `.trim()` at the call site, matching every other single-line `git rev-parse`
+  // read in this codebase (implement.ts, allocator.ts, manifest.ts all do the
+  // same) -- `git`/`runGit` (@pros/barrier) intentionally return raw stdout
+  // unmodified since some callers (e.g. multi-line `git diff --name-only`)
+  // need it untouched, so trimming is each single-line caller's own job.
+  const baseBranch = (await git(worktreeParentRepo, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
 
   const planContentEntry = (
     finalizedEntry.version === 1

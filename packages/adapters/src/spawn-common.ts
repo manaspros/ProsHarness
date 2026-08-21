@@ -77,9 +77,27 @@ function stripGhCredentials(env: NodeJS.ProcessEnv): void {
   env.GH_CONFIG_DIR = path.join(tmpdir(), `pros-no-gh-config-${randomUUID()}`);
 }
 
+/**
+ * Codex-only: never let an ambient `OPENAI_API_KEY`/`CODEX_API_KEY` (e.g. an
+ * operator's shell, or a CI job env that also runs unrelated build/test/
+ * dependency-install steps able to read the same job env -- OpenAI's own
+ * docs call this out as the risk) reach a `codex` subprocess. The installed
+ * `codex` CLI is expected to already be authenticated via its own credential
+ * store (`~/.codex/auth.json` or similar); this strip forces every codex
+ * spawn to prove it still works on that store alone, never a job-level key.
+ * Scoped to `provider === "codex"` only -- the Claude adapter has no
+ * equivalent concern and is left untouched.
+ */
+function stripCodexApiKeys(env: NodeJS.ProcessEnv, provider: Provider): void {
+  if (provider !== "codex") return;
+  delete env.OPENAI_API_KEY;
+  delete env.CODEX_API_KEY;
+}
+
 export function spawnCli({ command, args, provider, opts, parseLine }: SpawnCliArgs): SpawnResult {
   const env = { ...process.env, ...opts.env };
   stripGhCredentials(env);
+  stripCodexApiKeys(env, provider);
 
   const child = spawn(command, args, {
     cwd: opts.cwd,

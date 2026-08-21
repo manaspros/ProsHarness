@@ -1,4 +1,6 @@
 export * from "./types.js";
+export * from "./run-command.js";
+export * from "./git.js";
 export * from "./journal.js";
 export * from "./manifest.js";
 export * from "./guardian.js";

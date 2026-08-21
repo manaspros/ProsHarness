@@ -261,6 +261,9 @@ importers:
 
   packages/implement:
     dependencies:
+      '@pros/adapters':
+        specifier: workspace:*
+        version: link:../adapters
       '@pros/agents':
         specifier: workspace:*
         version: link:../agents
@@ -276,6 +279,9 @@ importers:
       '@pros/plan':
         specifier: workspace:*
         version: link:../plan
+      '@pros/review':
+        specifier: workspace:*
+        version: link:../review
     devDependencies:
       '@pros/worktree':
         specifier: workspace:*

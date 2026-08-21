@@ -35,11 +35,9 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
-import { Barrier, Journal, loadRunState } from "@pros/barrier";
+import { Barrier, Journal, loadRunState, git } from "@pros/barrier";
 import { wireNtfyNotifications } from "@pros/notify";
 import type { ModelSession } from "@pros/plan";
 import { RealClaudeSession, RealCodexSession } from "@pros/plan";
@@ -54,15 +52,22 @@ import {
   checkGhAuthenticated,
 } from "./pr.js";
 import { runImplementation, type ImplementResult } from "./implement.js";
-import { runVerification, type Verdict } from "./verify.js";
-import { runAdversarialReview, type ReviewResult } from "./review.js";
+import { runVerification, noCommitVerdict, type Verdict } from "./verify.js";
+import { runAdversarialReview, runCodexAdvisoryReview, type ReviewResult, type CodexAdvisoryResult } from "./review.js";
+import { resolveProjectByRepoRoot, type ValidationCommand } from "./project-config.js";
 
-const execFileAsync = promisify(execFile);
-
-async function git(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", args, { cwd, maxBuffer: 64 * 1024 * 1024 });
-  return stdout;
-}
+/**
+ * Same reasoning and exact fallback commands as implement.ts's own
+ * `FALLBACK_VALIDATION_COMMANDS` (not exported from there, and
+ * `implement.ts` is out of this phase's edit surface -- see this package's
+ * concurrent-agent constraints) -- a run against an unregistered/ad-hoc
+ * target repo still needs SOMETHING to verify against, and ProsHarness's own
+ * two Quick Commands are a real, working default, not an empty placeholder.
+ */
+const FALLBACK_VALIDATION_COMMANDS: ValidationCommand[] = [
+  { command: "pnpm run typecheck", label: "typecheck (fallback: no project resolved)" },
+  { command: "pnpm run test", label: "test (fallback: no project resolved)" },
+];
 
 /** Parses "owner/repo" out of a git remote URL, both SSH and HTTPS forms. */
 function parseOwnerRepo(remoteUrl: string): string {
@@ -94,12 +99,26 @@ export interface Gate2PipelineOptions {
   repoRoot: string;
   planMarkdown: string;
   fileAllowlist: string[];
+  /** Named-project override for the implementer brief; see implement.ts's `ImplementInput.agentBriefPath`. Omitted keeps today's `.claude/agents/scoped-fixer.md` default. */
+  agentBriefPath?: string;
+  /** Named-project override for the review skill; see review.ts's `ReviewInput.reviewSkillPath`. Omitted keeps today's `.claude/skills/review/SKILL.md` default. */
+  reviewSkillPath?: string;
   /** Defaults to new RealClaudeSession(). */
   claudeSession?: ModelSession;
   /** Defaults to new RealCodexSession(). */
   codexSession?: ModelSession;
   /** Defaults to a SEPARATE new RealClaudeSession() instance -- never sharing a resumeSessionId with claudeSession. */
   verifierSession?: ModelSession;
+  /**
+   * Explicit override for the harness-spawned validation commands verify.ts
+   * runs. When omitted, resolved from `PROJECT_REGISTRY` via
+   * `resolveProjectByRepoRoot(worktreeParentRepo ?? repoRoot)` (same
+   * resolution as implement.ts's own --allowedTools lookup), falling back to
+   * `FALLBACK_VALIDATION_COMMANDS` when unregistered. Mainly for tests that
+   * want fast, deterministic pass/fail commands instead of a real project's
+   * actual build/test suite.
+   */
+  validationCommands?: ValidationCommand[];
   /**
    * Defaults to `new RealGhClient()` if `PROS_GH_PR_TOKEN` is set (today's
    * behavior, unchanged); otherwise defaults to `new AmbientGhClient()` (the
@@ -159,6 +178,15 @@ export interface Gate2PipelineResult {
   implementResult: ImplementResult;
   verdict: Verdict;
   review: ReviewResult;
+  /**
+   * Phase 6: the SEPARATE, advisory-only Codex pass over the risk-ranked
+   * hunks + approved plan (see review.ts's `runCodexAdvisoryReview`).
+   * Undefined only when verification failed before this stage ever ran, or
+   * the project opted out via `ProjectConfig.codexAdvisoryReviewDisabled`.
+   * Never gates anything -- `status: "unavailable"` is a recorded, honest
+   * absence, not a synthesized approval.
+   */
+  codexAdvisory?: CodexAdvisoryResult;
   /** undefined if verification failed or review had unresolved blockers -- NO PR is opened in that case. */
   pr?: PrHandle;
   /** Set only once parkForGate2 succeeds (i.e. pr is defined). */
@@ -255,6 +283,11 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
       runId: opts.runId,
       attemptId: `${opts.runId}-implement`,
       repoRoot: opts.repoRoot,
+      // The implement stage resolves its own project (for validationCommands
+      // -> --allowedTools) from the ORIGINATING target repo, not ProsHarness's
+      // own repoRoot -- see ImplementInput.projectRepoRoot's doc comment.
+      projectRepoRoot: opts.worktreeParentRepo,
+      agentBriefPath: opts.agentBriefPath,
       tokenCeiling: opts.tokenCeiling,
       dangerouslySkipPermissions,
       rawLogPath: path.join(opts.runDir, "attempts", `${opts.runId}-implement`, "raw.log"),
@@ -263,10 +296,33 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
     if (!implementResult.committed) {
       return {
         implementResult,
-        verdict: { outcome: "fail", summary: "implementation produced no commit", failingChecks: [] },
+        verdict: noCommitVerdict("implementation produced no commit"),
         review: emptyReview(),
         aborted: { stage: "verify", reason: "implementation produced no commit" },
       };
+    }
+
+    // Same resolution as implement.ts's own project lookup (see
+    // ImplementInput.projectRepoRoot's doc comment): the ORIGINATING target
+    // repo (worktreeParentRepo), not ProsHarness's own repoRoot, is what
+    // determines this project's real validation commands. An explicit
+    // `opts.validationCommands` override skips resolution entirely.
+    let validationCommands: ValidationCommand[];
+    if (opts.validationCommands) {
+      validationCommands = opts.validationCommands;
+    } else {
+      const projectLookupRoot = opts.worktreeParentRepo ?? opts.repoRoot;
+      const project = resolveProjectByRepoRoot(projectLookupRoot);
+      if (project) {
+        validationCommands = project.validationCommands;
+      } else {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `runGate2Pipeline: no registered project for repoRoot ${JSON.stringify(projectLookupRoot)} -- falling back to ProsHarness's own typecheck/test commands. ` +
+            `Add an entry to PROJECT_REGISTRY (packages/implement/src/project-config.ts) to grant this project's real commands.`,
+        );
+        validationCommands = FALLBACK_VALIDATION_COMMANDS;
+      }
     }
 
     const verdict = await runVerification({
@@ -276,6 +332,7 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
       runDir: opts.runDir,
       expectedFenceEpoch: fenceEpoch,
       attemptId: `${opts.runId}-verify`,
+      validationCommands,
       rawLogPath: path.join(opts.runDir, "attempts", `${opts.runId}-verify`, "raw.log"),
       tokenCeiling: opts.tokenCeiling,
       dangerouslySkipPermissions,
@@ -296,6 +353,35 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
 
+    // One `validation_command_run` event PER harness-recorded check --
+    // separate from `verify_verdict` (whose shape is preserved unchanged
+    // above) so this phase adds evidence without touching that existing
+    // event's schema. This is the granular, per-command exit-code evidence
+    // a future decision-card UI needs for "Gates green" / "Reproduced" /
+    // "Fix proven" -- see verify.ts's file doc comment.
+    for (const check of verdict.checks) {
+      await journal.append({
+        runId: opts.runId,
+        fenceEpoch,
+        kind: "validation_command_run",
+        attemptId: `${opts.runId}-verify`,
+        command: check.command,
+        label: check.label,
+        // "gate" = this phase's only producer: the full configured
+        // validation-command list run once, after the fix already landed.
+        // "reproduce_before"/"reproduce_after" are reserved for a future
+        // phase's before/after-the-fix flow (not built here) -- pairing by
+        // (runId, command, role) is unambiguous once that flow exists,
+        // without this event's shape needing to change.
+        role: "gate",
+        exitCode: check.exitCode,
+        timedOut: check.timedOut,
+        durationMs: check.durationMs,
+        outputTail: check.outputTail,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    }
+
     if (verdict.outcome === "fail") {
       return {
         implementResult,
@@ -310,6 +396,7 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
       codexSession,
       worktreePath: opts.worktreePath,
       repoRoot: opts.repoRoot,
+      reviewSkillPath: opts.reviewSkillPath,
       baseSha: implementResult.baseSha,
       headSha: implementResult.headSha,
       planMarkdown: opts.planMarkdown,
@@ -333,11 +420,54 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
 
+    // ---- Codex advisory review (Phase 6) ----
+    //
+    // A SEPARATE pass from `runAdversarialReview` above: this one is
+    // read-only and advisory-only (see review.ts's file doc comment) and
+    // must never affect the blockers-present check above or gate PR
+    // creation below. Runs regardless of that check's outcome -- an
+    // advisory opinion on a diff the pipeline is about to abort on is still
+    // useful to a human looking at `aborted.reason` later -- unless the
+    // project explicitly opted out.
+    const projectForAdvisory = resolveProjectByRepoRoot(opts.worktreeParentRepo ?? opts.repoRoot);
+    let codexAdvisory: CodexAdvisoryResult | undefined;
+    if (!projectForAdvisory?.codexAdvisoryReviewDisabled) {
+      const codexAdvisoryAttemptId = `${opts.runId}-codex-advisory-review`;
+      codexAdvisory = await runCodexAdvisoryReview({
+        worktreePath: opts.worktreePath,
+        branch: opts.branch,
+        baseSha: implementResult.baseSha,
+        headSha: implementResult.headSha,
+        planMarkdown: opts.planMarkdown,
+        attemptId: codexAdvisoryAttemptId,
+        rawLogPath: path.join(opts.runDir, "attempts", codexAdvisoryAttemptId, "raw.log"),
+      }).catch((err) => ({
+        status: "unavailable" as const,
+        findings: [],
+        unavailableReason: `runCodexAdvisoryReview threw unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
+      }));
+
+      // Recorded unconditionally, same reasoning as verify_verdict/
+      // review_completed above -- an advisory pass that never ran, or that
+      // came back "unavailable", must be a durable, honest fact, not
+      // silently absent from the journal.
+      await journal.append({
+        runId: opts.runId,
+        fenceEpoch,
+        kind: "codex_advisory_review",
+        status: codexAdvisory.status,
+        findingsJson: JSON.stringify(codexAdvisory.findings),
+        unavailableReason: codexAdvisory.unavailableReason,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+    }
+
     if (review.verdict === "blockers-present") {
       return {
         implementResult,
         verdict,
         review,
+        codexAdvisory,
         aborted: { stage: "review", reason: `${review.unresolvedBlockers.length} unresolved blocker(s)` },
       };
     }
@@ -462,6 +592,7 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
       implementResult,
       verdict,
       review,
+      codexAdvisory,
       pr,
       checkpointId,
       questionId,

@@ -65,11 +65,12 @@ class CleanCodexReviewSession implements ModelSession {
   }
 }
 
+/** Advisory-only post-Phase-3: outcome is derived from the harness-run `validationCommands` override passed to runGate2Pipeline below, not from this session's text. */
 class PassingVerifierSession implements ModelSession {
   readonly provider = "claude" as const;
   async run(_opts: ModelRunOptions): Promise<ModelRunResult> {
     return {
-      text: JSON.stringify({ outcome: "pass", summary: "typecheck and tests pass", failingChecks: [] }),
+      text: JSON.stringify({ summary: "typecheck and tests pass" }),
       usage: { inputTokens: 15, outputTokens: 15 },
     };
   }
@@ -179,6 +180,11 @@ test("M4 end-to-end: seeded bug -> Gate 1 approval -> Gate 2 (implement/verify/r
       claudeSession: new Gate2ClaudeSession(gate1Result.worktreePath),
       codexSession: new CleanCodexReviewSession(),
       verifierSession: new PassingVerifierSession(),
+      // seedRepoRoot is an unregistered ad-hoc test repo with no real
+      // build/test suite -- override rather than relying on the
+      // ProsHarness-typecheck/test fallback, which would spawn `pnpm run
+      // typecheck` against a repo that has no package.json at all.
+      validationCommands: [{ command: "exit 0", label: "checks" }],
       ghClient,
       ghCredential,
     });

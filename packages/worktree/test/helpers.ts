@@ -17,6 +17,12 @@ export async function makeTempRepo(): Promise<string> {
   await execFileAsync("git", ["init", "-q"], { cwd: dir });
   await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
   await execFileAsync("git", ["config", "user.name", "Test"], { cwd: dir });
+  // Set locally, not passed per-commit: this repo must never depend on the
+  // operator's global `commit.gpgsign`/signing config, which can make a
+  // real `git commit` block forever on an interactive signing prompt (see
+  // packages/barrier/src/git.ts). Fixtures exercise git plumbing, not the
+  // user's signing setup.
+  await execFileAsync("git", ["config", "commit.gpgsign", "false"], { cwd: dir });
   await writeFile(path.join(dir, "README.md"), "hello\n");
   await execFileAsync("git", ["add", "."], { cwd: dir });
   await execFileAsync("git", ["commit", "-q", "-m", "init"], { cwd: dir });

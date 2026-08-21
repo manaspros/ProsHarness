@@ -183,11 +183,12 @@ class CodexReviewSession {
   }
 }
 
+/** Advisory-only post-Phase-3: outcome is derived from harness-run validationCommands (see the pipeline call below), not from this session's text. */
 class VerifierSession {
   readonly provider = "claude" as const;
   async run(_opts: ModelRunOptions): Promise<ModelRunResult> {
     return {
-      text: JSON.stringify({ outcome: "pass", summary: "all checks pass", failingChecks: [] }),
+      text: JSON.stringify({ summary: "all checks pass" }),
       usage: { inputTokens: 15, outputTokens: 15 },
     };
   }
@@ -226,6 +227,7 @@ test("runGate2Pipeline falls back to the ambient path when PROS_GH_PR_TOKEN is u
       claudeSession: new ClaudeStageSession(repo.workDir),
       codexSession: new CodexReviewSession(),
       verifierSession: new VerifierSession(),
+      validationCommands: [{ command: "exit 0", label: "checks" }],
       ghClient,
     });
 

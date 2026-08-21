@@ -198,3 +198,36 @@ Two corrections from round 4 worth flagging because they were genuine design bug
 - **A process group is not containment.** A child can `setsid` and escape. Linux cgroup v2 scope is the boundary, which means Linux-only for now - a trade we accept, because portability is worth less than a guarantee that holds.
 
 And one claim we withdrew as dishonest: **"exactly one continuation" is not achievable.** A crash after launching `--resume` but before recording the attempt is unavoidable. We promise one accepted question, one accepted answer, no overlapping live attempts, and idempotent at-least-once recovery.
+
+---
+
+## Round 5 - a real darwin containment backend, honestly weaker
+
+D25's "Linux-only for now" left the non-negotiable invariant ("a parked run must own no live model process") **unenforced on the machine most contributors actually develop on**. `systemd-run` and cgroup v2 do not exist on darwin, so `Guardian.launch` degraded to a readiness poll that always timed out, and the guardian test suite never terminated. The decision: **build a real macOS backend, not a stub, and be explicit in code and docs that it is a weaker guarantee, not a portable rewrite of the Linux one.**
+
+**D26: `Guardian` is split into a platform-agnostic dispatcher (`guardian.ts`) plus one `GuardianBackend` implementation per platform** (`guardian-linux.ts`, `guardian-darwin.ts`), selected once at module load from `process.platform`, never per call. The interface (`guardian-backend.ts`) is the pre-split `Guardian` class's own existing public surface (`isEmpty`/`freeze`/`thaw`/`killAll`/`cgroupGone`/`teardown`), not a new shape invented for the split. `guardian-linux.ts` is the original cgroup/systemd-scope code, moved essentially unchanged; its tests describe it exactly as before.
+
+**The darwin backend (`DarwinProcessGroupBackend`) has no cgroup v2 to lean on.** It spawns with `detached: true` (which itself calls `setsid(2)` on POSIX, so the launched process starts in its own session outside the daemon's process group), and contains the tree by repeatedly walking `ps -axo pid,ppid,stat` from that root and SIGKILLing every live descendant found, looping to narrow (never close) the window for a fork that lands mid-pass.
+
+**A real bug was caught and fixed while building this, not merely anticipated:** the first implementation re-walked the tree fresh from `rootPid` on every pass. The moment `rootPid` itself died -- typically on the very first pass, since it is usually discovered and killed immediately -- the kernel re-parents any still-live descendant to launchd (ppid 1), and a walk that starts from a now-dead root finds nothing, reporting "boundary empty" while a live, orphaned grandchild kept running. This was reproduced directly in this backend's own test suite (`packages/barrier/test/guardian.test.ts`, kill-test #3 and the race-window test), not just reasoned about. The fix: `known`, a per-boundary `Set<number>` that only ever grows -- every PID ever confirmed to descend from `rootPid` stays tracked for the life of the boundary, regardless of whether its immediate parent later dies. `aliveKnownDescendants` (guardian-darwin.ts) and its duplicate in `watchdog.mjs` (which cannot import the TS module graph -- it is spawned as a raw subprocess by path) both implement this.
+
+A second design considered and rejected: holding `rootPid` alive and killing it last, so anything it forks while still alive keeps showing up as its child in the next snapshot instead of jumping straight to launchd. This is real defense-in-depth against a *finite* fork burst, but measured directly against this backend's continuous-forking adversarial test fixture, it made things strictly worse: an adversary that keeps forking for as long as its root survives never produces a pass with "nothing else alive," so the loop burned its entire 3s budget every time and still killed the root at the very last moment anyway -- all cost, no benefit. Killing everything discovered on every pass, root included, is both faster and no worse: a well-behaved attempt stops forking the instant its root dies (nothing is left to schedule more children), which is exactly what keeps the residual race window bounded to "whatever forked in the last snapshot-to-signal gap" instead of open-ended.
+
+**Honest parity table** (Linux vs. darwin, same containment operation):
+
+| Guarantee | Linux (cgroup v2) | darwin (PID-tree walk) | Parity |
+|---|---|---|---|
+| Kill whole tree incl. `setsid` escapees | `cgroup.kill`, atomic | walk-and-SIGKILL loop, repeated | **partial** -- racy, bounded not atomic |
+| Freeze without killing | `cgroup.freeze` | `SIGSTOP` per discovered PID | **partial** -- a fork after the freeze snapshot is not paused |
+| Membership check (`isEmpty`) | read `cgroup.procs` | `known`-set + `ps` reconstruction | **partial** -- racy, PID reuse not ruled out |
+| Per-tree CPU/memory cap | cgroup v2 limits | none (`setrlimit` is per-process, not per-tree) | **none** |
+| Orphan reaping if the daemon dies | watchdog polls heartbeat | identical mechanism, platform-appropriate walk | **full** |
+
+**Measured, not assumed:** against a fixture that forks a new escaping grandchild every 20ms for as long as its root survives, a single naive snapshot-and-kill pass (root killed immediately, no deferral) left 0-1 stragglers per run; the real `killAll()` loop (same immediate-kill strategy, given its full budget) converged to 0 survivors within 200-350ms across repeated runs. The race window is real but small under realistic fork rates -- see `packages/barrier/test/guardian.test.ts`'s race-window test for the reproducible measurement, gated darwin-only.
+
+**Rejected alternatives:**
+- **`sandbox-exec`** -- deprecated by Apple with no replacement API; building on a removed-tomorrow primitive is a worse bet than an honestly-imperfect PID walk.
+- **macOS App Sandbox** -- designed for a signed, distributed app opting itself into a sandbox at launch, not for confining an arbitrary already-running CLI subprocess (`claude`, `codex`) after the fact. Wrong model entirely, not just an inconvenient API.
+- **A new dependency** (`tree-kill`, `pidtree`, `execa`, etc.) -- all do the same `ps`-based PID-tree walk this backend needs in ~40 lines; none solve the `setsid`-to-launchd re-parenting case any better than tracking a persistent `known` set does here.
+
+**Explicitly out of scope, and a separate decision if it ever becomes real:** a per-tree memory/CPU cap on darwin. `setrlimit` is per-process, not per-tree, and there is no cgroup-equivalent aggregate limit available to an unprivileged process. If this is ever genuinely required, the shape of the fix is a `launchd`-per-attempt redesign (a launchd job can carry resource limits), not a swap inside `GuardianBackend` -- a new decision, not an extension of this one.

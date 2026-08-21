@@ -69,6 +69,71 @@ export function buildCodexArgs(
   return args;
 }
 
+// ---------------------------------------------------------------------------
+// Read-only advisory review (Phase 6, verify lane) -- see
+// packages/implement/src/review.ts's `runCodexAdvisoryReview`, the only
+// caller. Kept in this adapter (not a parallel spawn path in @pros/implement)
+// because interpreting codex's own NDJSON event vocabulary is this module's
+// job already (parseCodexLine/KNOWN_CODEX_TYPES above).
+// ---------------------------------------------------------------------------
+
+/**
+ * `--sandbox read-only` is deliberate and load-bearing: given `workspace-write`
+ * a second model starts fixing instead of judging, collapsing the
+ * finder/implementer/verifier lane split this project relies on. Do not
+ * widen this sandbox. `--output-schema` takes a real file path (confirmed
+ * against `codex exec --help` on codex-cli 0.147.0: "Path to a JSON Schema
+ * file describing the model's final response shape"), not inline JSON --
+ * the caller is responsible for writing `outputSchemaPath` to disk first.
+ */
+export function buildCodexAdvisoryExtraArgs(outputSchemaPath: string): string[] {
+  return ["--sandbox", "read-only", "--output-schema", outputSchemaPath];
+}
+
+export type CodexAdvisoryOutcomeStatus = "ok" | "turn_failed" | "no_agent_message";
+
+export interface CodexAdvisoryOutcome {
+  status: CodexAdvisoryOutcomeStatus;
+  /** The raw agent_message text -- present only when status === "ok". Caller still has to JSON.parse/validate it against the requested schema. */
+  text?: string;
+  /** Diagnostic detail for any non-"ok" status, e.g. the turn.failed error payload. */
+  detail?: string;
+}
+
+/**
+ * Drains a codex `--json` event stream and pulls out the final agent
+ * message, exactly like `@pros/plan`'s `RealCodexSession.run` does -- except
+ * this version reports failure as data (a `CodexAdvisoryOutcome`) rather
+ * than throwing, because the advisory reviewer must degrade gracefully
+ * (timeout/non-zero exit/malformed output) instead of failing the pipeline.
+ */
+export async function collectCodexAdvisoryOutcome(events: AsyncIterable<ParsedEvent>): Promise<CodexAdvisoryOutcome> {
+  const collected: ParsedEvent[] = [];
+  for await (const event of events) collected.push(event);
+
+  const turnFailed = [...collected].reverse().find((e) => e.type === "turn.failed");
+  if (turnFailed) {
+    const failedData = turnFailed.data as Record<string, unknown> | undefined;
+    const failure = failedData?.error ?? failedData?.message ?? failedData?.reason ?? failedData;
+    const detail = typeof failure === "string" ? failure : JSON.stringify(failure ?? turnFailed.raw);
+    return { status: "turn_failed", detail };
+  }
+
+  const messageEvent = [...collected]
+    .reverse()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .find((e) => e.type === "item.completed" && (e.data as any)?.item?.type === "agent_message");
+  if (!messageEvent || messageEvent.parseStatus !== "ok") {
+    return {
+      status: "no_agent_message",
+      detail: `saw ${collected.length} event(s), last type=${collected[collected.length - 1]?.type ?? "<none>"}`,
+    };
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const text = String((messageEvent.data as any).item.text ?? "");
+  return { status: "ok", text };
+}
+
 export function spawnCodex(opts: SpawnOptions): SpawnResult {
   const args = buildCodexArgs(opts);
 
