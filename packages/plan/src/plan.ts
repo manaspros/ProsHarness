@@ -91,6 +91,7 @@ export async function draftPlan(session: ModelSession, opts: DraftPlanOptions): 
     '  - "markdown": a human-readable plan (steps, rationale, risk) in Markdown',
     '  - "structured": {steps: string[], filesTouched: string[], risk: string, diagram: string, claim: string} summarizing the same plan, where:',
     '    - "diagram" is a Mermaid diagram (flowchart/sequence/etc, your choice of the best fit) illustrating the change, as raw Mermaid source only (no surrounding markdown fence)',
+    '      Always wrap node and edge label text in double quotes, e.g. A["Import fails, retry does nothing"], and also wrap any subgraph title, e.g. subgraph "Frontend cache fix, unmerged" -- keep labels and titles short. An unquoted comma, parenthesis, colon, or dash inside any of these fails to parse.',
     '    - "claim" is a single plain-language paragraph (no jargon a non-engineer reading this could not follow) stating what this plan claims will be true once implemented',
   ].join("\n");
 
@@ -158,7 +159,7 @@ export async function revisePlan(session: ModelSession, opts: RevisePlanOptions)
     "    listing each objection's claim and whether you accepted or rejected it and why",
     '  - "structured": {steps: string[], filesTouched: string[], risk: string, diagram: string, claim: string,',
     '    objectionResolutions: {claim: string, resolution: "accepted"|"rejected", note: string}[]}',
-    '    ("diagram" is a Mermaid diagram of the revised change; "claim" is a one-paragraph plain-language restatement of what the revised plan claims will be true once implemented)',
+    '    ("diagram" is a Mermaid diagram of the revised change -- always wrap node and edge label text, and any subgraph title, in double quotes, e.g. A["Import fails, retry does nothing"] and subgraph "Frontend cache fix, unmerged", and keep labels/titles short; "claim" is a one-paragraph plain-language restatement of what the revised plan claims will be true once implemented)',
     "",
     findingBlock(opts.finding),
   ].join("\n");
@@ -245,7 +246,7 @@ export async function refinePlanWithInstruction(session: ModelSession, opts: Ref
     "Conclude with a single JSON object (matching the provided schema) with:",
     '  - "markdown": the updated human-readable plan in Markdown',
     '  - "structured": {steps: string[], filesTouched: string[], risk: string, diagram: string, claim: string}',
-    '    ("diagram" is a Mermaid diagram of the updated change; "claim" is a one-paragraph plain-language restatement of what the updated plan claims will be true once implemented)',
+    '    ("diagram" is a Mermaid diagram of the updated change -- always wrap node and edge label text, and any subgraph title, in double quotes, e.g. A["Import fails, retry does nothing"] and subgraph "Frontend cache fix, unmerged", and keep labels/titles short; "claim" is a one-paragraph plain-language restatement of what the updated plan claims will be true once implemented)',
   ].join("\n");
 
   const result = await session.run({

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { normalizeMermaidSource } from "../../lib/mermaid-normalize";
 
 /**
  * MermaidDiagramClient -- the actual Mermaid-touching implementation.
@@ -46,7 +47,7 @@ type RenderState =
   | { status: "loading" }
   | { status: "ok"; svg: string }
   | { status: "too_large" }
-  | { status: "error"; message: string };
+  | { status: "error"; message: string; source: string };
 
 /**
  * Reads this app's actual current theme tokens (app/globals.css's HSL
@@ -119,6 +120,14 @@ export default function MermaidDiagramClient({ source, diagramId }: MermaidDiagr
       return;
     }
 
+    // Normalize BEFORE anything security-relevant runs: this only rewrites
+    // node/edge label punctuation (see lib/mermaid-normalize.ts) so a source
+    // that is merely malformed prose has a chance to parse. It never runs
+    // after mermaid.render, never touches the resulting SVG, and is not a
+    // substitute for securityLevel/sandbox/timeout/size-cap below -- it is a
+    // parse-success improvement only.
+    const normalizedSource = normalizeMermaidSource(source);
+
     (async () => {
       try {
         const mermaidModule = await import("mermaid");
@@ -129,11 +138,15 @@ export default function MermaidDiagramClient({ source, diagramId }: MermaidDiagr
           theme: "base",
           themeVariables: readThemeVariables(),
         });
-        const { svg } = await withTimeout(mermaid.render(`mermaid-${diagramId}`, source), RENDER_TIMEOUT_MS);
+        const { svg } = await withTimeout(mermaid.render(`mermaid-${diagramId}`, normalizedSource), RENDER_TIMEOUT_MS);
         if (!cancelledRef.current) setState({ status: "ok", svg });
       } catch (err) {
         if (!cancelledRef.current) {
-          setState({ status: "error", message: err instanceof Error ? err.message : String(err) });
+          setState({
+            status: "error",
+            message: err instanceof Error ? err.message : String(err),
+            source: normalizedSource,
+          });
         }
       }
     })();
@@ -156,7 +169,18 @@ export default function MermaidDiagramClient({ source, diagramId }: MermaidDiagr
   if (state.status === "error") {
     return (
       <div className="rounded-md border border-border bg-surface-base/60 p-3 text-xs text-muted-foreground">
-        Diagram could not be rendered: {state.message}
+        <p>Diagram could not be rendered. The plan itself is still readable below.</p>
+        <details className="mt-2">
+          <summary className="cursor-pointer select-none text-muted-foreground">Show parse error and diagram source</summary>
+          {/* Plain text nodes only -- state.message/state.source are untrusted (model- and
+              mermaid-error-generated) and are never interpreted as HTML here. */}
+          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-surface-raised/60 p-2 text-[11px]">
+            {state.message}
+          </pre>
+          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-surface-raised/60 p-2 text-[11px]">
+            {state.source}
+          </pre>
+        </details>
       </div>
     );
   }
