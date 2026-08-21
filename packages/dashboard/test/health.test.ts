@@ -81,6 +81,13 @@ test("codex_advisory_review (Phase 6's advisory-only Codex pass) is a recognized
   assert.deepEqual(unknownJournalKinds(["codex_advisory_review"]), []);
 });
 
+// --- Fresh-workspace-per-session: workspace_base_resolved -------------------
+
+test("workspace_base_resolved (fetch + remote-default-branch resolution, written before worktree_intent) is a recognized journal kind", () => {
+  assert.ok(KNOWN_JOURNAL_KINDS.has("workspace_base_resolved"));
+  assert.deepEqual(unknownJournalKinds(["workspace_base_resolved"]), []);
+});
+
 test("LOAD-BEARING INVARIANT: an unrecognized kind is unhealthy even when every other kind present -- including the new validation_command_run -- is known", () => {
   // Exercises the exact mechanism app/runs/[runId]/page.tsx uses: build a
   // HealthIssue per kind unknownJournalKinds() flags, then isHealthy() on

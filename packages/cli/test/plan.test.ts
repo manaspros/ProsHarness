@@ -12,15 +12,26 @@ import { runPlanCommand } from "../src/plan.js";
 
 const execFileAsync = promisify(execFile);
 
-async function makeTempRepo(): Promise<string> {
+/**
+ * A clone of a real bare "origin", not a bare local-only repo -- the
+ * fresh-workspace-per-session feature (packages/worktree/src/fresh-base.ts,
+ * wired into runPlanPipeline) fetches `origin` and resolves the workspace
+ * against `origin/<default-branch>`, so every fixture repoRoot passed to the
+ * real pipeline needs a real remote, exactly like packages/implement's
+ * e2e-m4.test.ts/from-run.test.ts already do for the same reason.
+ */
+async function makeTempRepo(): Promise<{ repoRoot: string; bareRepoPath: string }> {
+  const bareRepoPath = await mkdtemp(path.join(tmpdir(), "pros-cli-plan-origin-"));
   const dir = await mkdtemp(path.join(tmpdir(), "pros-cli-plan-repo-"));
-  await execFileAsync("git", ["init", "-q"], { cwd: dir });
+  await execFileAsync("git", ["init", "-q", "-b", "main", "--bare", bareRepoPath]);
+  await execFileAsync("git", ["clone", "-q", bareRepoPath, dir]);
   await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
   await execFileAsync("git", ["config", "user.name", "Test"], { cwd: dir });
   await writeFile(path.join(dir, "loop.ts"), "for (let i = 0; i <= arr.length; i++) {}\n");
   await execFileAsync("git", ["add", "."], { cwd: dir });
   await execFileAsync("git", ["commit", "-q", "-m", "init"], { cwd: dir });
-  return dir;
+  await execFileAsync("git", ["push", "-q", "origin", "main"], { cwd: dir });
+  return { repoRoot: dir, bareRepoPath };
 }
 
 /** A minimal deterministic fake ModelSession -- one canned response per call, indexed by call order. */
@@ -38,7 +49,7 @@ class FakeSession implements ModelSession {
 }
 
 test("pros plan: end-to-end with fake sessions + a real worktree allocation", async () => {
-  const repoRoot = await makeTempRepo();
+  const { repoRoot, bareRepoPath } = await makeTempRepo();
   const worktreesRoot = await mkdtemp(path.join(tmpdir(), "pros-cli-plan-worktrees-"));
   const runsRoot = await mkdtemp(path.join(tmpdir(), "pros-cli-plan-runs-"));
   const runId = "run-cli-plan-1";
@@ -122,6 +133,7 @@ test("pros plan: end-to-end with fake sessions + a real worktree allocation", as
     assert.deepEqual(objectionsJson.unresolved, []);
   } finally {
     await rm(repoRoot, { recursive: true, force: true }).catch(() => undefined);
+    await rm(bareRepoPath, { recursive: true, force: true }).catch(() => undefined);
     await rm(worktreesRoot, { recursive: true, force: true }).catch(() => undefined);
     await rm(runsRoot, { recursive: true, force: true }).catch(() => undefined);
   }
@@ -136,7 +148,7 @@ test("pros plan: end-to-end with fake sessions + a real worktree allocation", as
  * already covers) reads `PROS_NOTIFICATIONS_ENABLED` and actually fires.
  */
 test("pros plan: PROS_NOTIFICATIONS_ENABLED=1 makes the real CLI entry point fire the Gate 1 park notification", async () => {
-  const repoRoot = await makeTempRepo();
+  const { repoRoot, bareRepoPath } = await makeTempRepo();
   const worktreesRoot = await mkdtemp(path.join(tmpdir(), "pros-cli-plan-notify-worktrees-"));
   const runsRoot = await mkdtemp(path.join(tmpdir(), "pros-cli-plan-notify-runs-"));
   const runId = "run-cli-plan-notify-1";
@@ -192,6 +204,7 @@ test("pros plan: PROS_NOTIFICATIONS_ENABLED=1 makes the real CLI entry point fir
     else process.env.PROS_NOTIFICATIONS_ENABLED = previous;
     if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
     await rm(repoRoot, { recursive: true, force: true }).catch(() => undefined);
+    await rm(bareRepoPath, { recursive: true, force: true }).catch(() => undefined);
     await rm(worktreesRoot, { recursive: true, force: true }).catch(() => undefined);
     await rm(runsRoot, { recursive: true, force: true }).catch(() => undefined);
   }

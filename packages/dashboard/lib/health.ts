@@ -47,6 +47,9 @@ export const KNOWN_JOURNAL_KINDS: ReadonlySet<string> = new Set([
   "worktree_allocated",
   "worktree_confirmed",
   "worktree_rollback",
+  // Fresh-workspace-per-session (fetch + remote-default-branch resolution),
+  // written by packages/plan/src/pipeline.ts BEFORE worktree_intent.
+  "workspace_base_resolved",
   "finding_recorded",
   "model_session_recorded",
   "plan_operation_started",

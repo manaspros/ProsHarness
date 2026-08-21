@@ -3,7 +3,7 @@ import { open, rename, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { Barrier, Journal, loadRunState } from "@pros/barrier";
 import { wireNtfyNotifications } from "@pros/notify";
-import { WorktreeAllocator } from "@pros/worktree";
+import { WorktreeAllocator, resolveFreshBaseRef } from "@pros/worktree";
 import type { ModelSession } from "./model-session.js";
 import { RealClaudeSession, RealCodexSession } from "./real-sessions.js";
 import { runFinding, type Finding } from "./finding.js";
@@ -41,6 +41,18 @@ export interface PlanPipelineOptions {
   notificationsEnabled?: boolean;
   /** Retained for backwards-compatible callers; dashboard/CLI sessions always force this on. */
   dangerouslySkipPermissions?: boolean;
+  /**
+   * Fresh-workspace-per-session (see packages/worktree/src/fresh-base.ts):
+   * the git remote name (NOT a URL) to fetch and base the new session's
+   * workspace on. Defaults to "origin", the overwhelming convention.
+   */
+  remote?: string;
+  /**
+   * Last-resort default-branch override (e.g. a `ProjectConfig` field) used
+   * only if this repo's remote HEAD can't be detected from the remote
+   * itself. Never assumed -- omit to skip this fallback.
+   */
+  defaultBranchFallback?: string;
 }
 
 export interface PlanPipelineResult {
@@ -74,7 +86,9 @@ export async function writeFileAtomic(finalPath: string, body: string): Promise<
 }
 
 /**
- * Ties the plan pipeline together: allocate the worktree FIRST (atomically,
+ * Ties the plan pipeline together: resolve a fresh, provably remote base ref
+ * (fetch + default-branch detection, see `resolveFreshBaseRef` in
+ * @pros/worktree), then allocate the worktree FROM THAT REF (atomically,
  * before any agent runs -- the explicit M2 requirement, docs/03-architecture.md),
  * then run finding + debate INSIDE that worktree, then durably persist the
  * final plan + objections to disk.
@@ -88,15 +102,55 @@ export async function runPlanPipeline(opts: PlanPipelineOptions): Promise<PlanPi
   const runDir = path.join(opts.runsRoot, runId);
   await mkdir(runDir, { recursive: true });
 
+  const journal = await Journal.open(runDir);
+  const fenceEpoch = (await loadRunState(runDir)).fenceEpoch;
+
+  // Fresh-workspace-per-session: resolve a provably remote-tracking base ref
+  // BEFORE any worktree is allocated, so `WorktreeAllocator.allocate()` never
+  // falls back to its own default of local `HEAD` (see packages/worktree/
+  // src/fresh-base.ts's doc comment for the incident this closes). Recorded
+  // durably either way -- success or hard failure -- so the journal is never
+  // ambiguous about whether this run's workspace is actually fresh.
+  const remote = opts.remote ?? "origin";
+  let baseRef: string;
+  try {
+    const resolved = await resolveFreshBaseRef({
+      repoRoot: opts.repoRoot,
+      remote,
+      defaultBranchFallback: opts.defaultBranchFallback,
+    });
+    baseRef = resolved.baseRef;
+    await journal.append({
+      runId,
+      fenceEpoch,
+      kind: "workspace_base_resolved",
+      remote: resolved.remote,
+      baseRef: resolved.baseRef,
+      resolved: true,
+      fetchOk: resolved.fetchOk,
+      usedStaleRemoteRef: resolved.usedStaleRemoteRef,
+      detail: resolved.detail,
+    });
+  } catch (err) {
+    await journal.append({
+      runId,
+      fenceEpoch,
+      kind: "workspace_base_resolved",
+      remote,
+      resolved: false,
+      fetchOk: false,
+      usedStaleRemoteRef: false,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+
   const allocator = new WorktreeAllocator({
     repoRoot: opts.repoRoot,
     worktreesRoot: opts.worktreesRoot,
     runsRoot: opts.runsRoot,
   });
-  const allocation = await allocator.allocate(runId);
-
-  const journal = await Journal.open(runDir);
-  const fenceEpoch = (await loadRunState(runDir)).fenceEpoch;
+  const allocation = await allocator.allocate(runId, { baseRef });
 
   const claudeSession = opts.claudeSession ?? new RealClaudeSession();
   const codexSession = opts.codexSession ?? new RealCodexSession();

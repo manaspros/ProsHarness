@@ -109,6 +109,23 @@ export type JournalEntry = JournalEntryBase &
     | { kind: "worktree_allocated"; allocationId: string; baseSha: string; worktreePath: string; branch: string }
     | { kind: "worktree_confirmed"; allocationId: string }
     | { kind: "worktree_rollback"; allocationId: string; reason: string }
+    // --- fresh-workspace-per-session: resolved BEFORE worktree_intent, so
+    // reconcile()/dashboards can always tell whether a run's workspace was
+    // actually based on a fetched remote ref, or (honestly) was not.
+    | {
+        kind: "workspace_base_resolved";
+        remote: string;
+        /** A remote-tracking ref, e.g. "origin/main". Absent when resolved is false. */
+        baseRef?: string;
+        /** False means resolution failed entirely and no worktree was allocated for this attempt -- see detail. */
+        resolved: boolean;
+        /** Whether `git fetch` itself succeeded. */
+        fetchOk: boolean;
+        /** True when fetchOk is false but a pre-existing (possibly stale) remote-tracking ref was used anyway. */
+        usedStaleRemoteRef: boolean;
+        /** Fetch error / failure detail. Undefined on a clean fetch. */
+        detail?: string;
+      }
     // --- M2: plan pipeline (finding -> plan -> independent critique -> bounded debate) ---
     | { kind: "finding_recorded"; findingId: string; title: string; evidenceJson: string; summary?: string }
     | {

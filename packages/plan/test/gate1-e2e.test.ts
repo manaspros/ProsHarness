@@ -26,19 +26,31 @@ const execFileAsync = promisify(execFile);
  * hold when a run arrives at "parked" via the actual pipeline wiring.
  */
 
-async function makeTempRepo(): Promise<string> {
+/**
+ * A clone of a real bare "origin", not a bare local-only repo -- the
+ * fresh-workspace-per-session feature (packages/worktree/src/fresh-base.ts,
+ * wired into runPlanPipeline) fetches `origin` and resolves the workspace
+ * against `origin/<default-branch>`, so every fixture repoRoot passed to the
+ * real pipeline needs a real remote, exactly like packages/implement's
+ * e2e-m4.test.ts/from-run.test.ts already do for the same reason.
+ */
+async function makeTempRepo(): Promise<{ repoRoot: string; bareRepoPath: string }> {
+  const bareRepoPath = await mkdtemp(path.join(tmpdir(), "pros-gate1-e2e-origin-"));
   const dir = await mkdtemp(path.join(tmpdir(), "pros-gate1-e2e-repo-"));
-  await execFileAsync("git", ["init", "-q"], { cwd: dir });
+  await execFileAsync("git", ["init", "-q", "-b", "main", "--bare", bareRepoPath]);
+  await execFileAsync("git", ["clone", "-q", bareRepoPath, dir]);
   await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
   await execFileAsync("git", ["config", "user.name", "Test"], { cwd: dir });
   await writeFile(path.join(dir, "loop.ts"), "for (let i = 0; i <= arr.length; i++) {}\n");
   await execFileAsync("git", ["add", "."], { cwd: dir });
   await execFileAsync("git", ["commit", "-q", "-m", "init"], { cwd: dir });
-  return dir;
+  await execFileAsync("git", ["push", "-q", "origin", "main"], { cwd: dir });
+  return { repoRoot: dir, bareRepoPath };
 }
 
 interface Scenario {
   repoRoot: string;
+  bareRepoPath: string;
   worktreesRoot: string;
   runsRoot: string;
   runId: string;
@@ -46,14 +58,15 @@ interface Scenario {
 }
 
 async function makeScenario(runId: string): Promise<Scenario> {
-  const repoRoot = await makeTempRepo();
+  const { repoRoot, bareRepoPath } = await makeTempRepo();
   const worktreesRoot = await mkdtemp(path.join(tmpdir(), "pros-gate1-e2e-worktrees-"));
   const runsRoot = await mkdtemp(path.join(tmpdir(), "pros-gate1-e2e-runs-"));
-  return { repoRoot, worktreesRoot, runsRoot, runId, runDir: path.join(runsRoot, runId) };
+  return { repoRoot, bareRepoPath, worktreesRoot, runsRoot, runId, runDir: path.join(runsRoot, runId) };
 }
 
 async function cleanupScenario(s: Scenario): Promise<void> {
   await rm(s.repoRoot, { recursive: true, force: true }).catch(() => undefined);
+  await rm(s.bareRepoPath, { recursive: true, force: true }).catch(() => undefined);
   await rm(s.worktreesRoot, { recursive: true, force: true }).catch(() => undefined);
   await rm(s.runsRoot, { recursive: true, force: true }).catch(() => undefined);
 }
