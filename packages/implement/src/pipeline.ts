@@ -172,6 +172,285 @@ export interface Gate2PipelineOptions {
   worktreeParentRepo?: string;
   /** Permission policy selected for the run; the implementation context is fresh but uses the same explicit policy. */
   dangerouslySkipPermissions?: boolean;
+  /**
+   * The plan's own one-line, plain-language claim (`@pros/plan`'s structured
+   * plan schema, `packages/plan/src/plan.ts`). Wired by
+   * `deriveGate2OptionsFromRun` (packages/implement/src/from-run.ts) off the
+   * finalized plan's `structuredJson` in the journal -- optional and
+   * undefined for runs planned before that schema existed, or when the field
+   * is blank/absent. When present, it becomes the PR title source (see
+   * `derivePrTitleSource`) and the `## Summary` section; when absent, the PR
+   * title/body derive from `planMarkdown`'s own first line instead, which is
+   * degrading gracefully, not a bug.
+   */
+  planClaim?: string;
+  /**
+   * The plan's own mermaid diagram source (`@pros/plan`'s `diagram` field,
+   * same provenance and same-caveat as `planClaim` above). When present and
+   * non-blank, it becomes the draft PR body's diagram section verbatim
+   * (GitHub renders mermaid natively -- no rendering library involved). When
+   * absent or blank, the diagram section is omitted entirely -- never an
+   * empty or broken fence.
+   */
+  planDiagram?: string;
+}
+
+/**
+ * Mined rule 3 ("no ticket IDs in PR titles/bodies/commit messages"),
+ * enforced here rather than only documented: matches an uppercase
+ * alpha(-numeric) project-key prefix + hyphen + digits (e.g. `AGENT-1234`,
+ * `ENGOPS-456`, `ZD-1234`, `JIRA-123`), optionally wrapped in `[...]`/`(...)`.
+ * Generic on purpose -- this module has no registry of "real" ticket
+ * prefixes and must not need one to do the stripping.
+ */
+const TICKET_ID_RE = /[[(]?\b[A-Z][A-Z0-9]{1,9}-\d{1,6}\b[\])]?/g;
+
+/** The verb:object shape used when a project doesn't declare its own `ProjectConfig.prTitlePattern`. */
+const DEFAULT_PR_TITLE_PATTERN = /^[a-z][a-z0-9-]*: .+/;
+
+/** Thrown by `derivePrTitle` when no shape of the plan's own words can be made to satisfy the project's title pattern -- fails loudly rather than opening a badly-titled PR. */
+export class PrTitleValidationError extends Error {
+  constructor(candidate: string, pattern: RegExp) {
+    super(`derived PR title ${JSON.stringify(candidate)} does not match required pattern ${pattern}`);
+    this.name = "PrTitleValidationError";
+  }
+}
+
+/** Strips ticket IDs (see `TICKET_ID_RE`) and collapses the whitespace that removing one leaves behind. Applied to every free-text field this module writes into a PR title or body. */
+export function stripTicketIds(text: string): string {
+  return text
+    .replace(TICKET_ID_RE, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+/**
+ * Collapses a piece of model-/plan-generated free text to a single safe
+ * inline markdown line: newlines (which could otherwise start a fake
+ * heading, list item, or code fence at the start of a line) are flattened
+ * to spaces, ticket IDs are stripped, and the result is trimmed and bounded.
+ * NOT used for the diagram block -- that goes through `fenceMermaid`
+ * instead, since a fenced block's escape mechanism (more backticks than any
+ * run inside the content) is different from "flatten to one line".
+ */
+export function toSafeInline(text: string, maxLen = 400): string {
+  const flattened = stripTicketIds(text.replace(/\r?\n/g, " ")).replace(/[ \t]{2,}/g, " ").trim();
+  return flattened.length > maxLen ? `${flattened.slice(0, maxLen - 3)}...` : flattened;
+}
+
+/**
+ * Picks the plan's own words to build a title from -- `planClaim` if a
+ * caller has wired one through (see `Gate2PipelineOptions.planClaim`),
+ * otherwise the first non-blank line of `planMarkdown` with a leading
+ * markdown heading marker stripped. Never invents new text.
+ */
+export function derivePrTitleSource(opts: { planClaim?: string; planMarkdown: string }): string {
+  if (opts.planClaim && opts.planClaim.trim().length > 0) {
+    return opts.planClaim.trim();
+  }
+  const lines = opts.planMarkdown
+    .split("\n")
+    .map((l) => l.trim().replace(/^#+\s*/, ""))
+    .filter((l) => l.length > 0);
+  // A bare one-word heading (e.g. "# Plan") is a document label, not the
+  // plan's own claim -- prefer the first line with real content (>= 2
+  // words) and only fall back to a one-word line if nothing better exists.
+  return lines.find((l) => l.split(/\s+/).length >= 2) ?? lines[0] ?? "";
+}
+
+/**
+ * Builds a `verb: object` PR title out of the plan's own words (never
+ * invented text) and validates it against `pattern`
+ * (`ProjectConfig.prTitlePattern`, or `DEFAULT_PR_TITLE_PATTERN` when a
+ * project doesn't declare one). Ticket IDs are stripped first. If the
+ * source text isn't already in `verb: object` shape, the first
+ * whitespace-delimited token becomes the (lowercased) verb and the rest
+ * becomes the object -- a light reshaping of the SAME words, not new
+ * content. Throws `PrTitleValidationError` (rather than silently opening a
+ * badly-titled PR) if no such reshaping satisfies `pattern`.
+ */
+export function derivePrTitle(source: string, pattern: RegExp = DEFAULT_PR_TITLE_PATTERN): string {
+  const cleaned = stripTicketIds(source.replace(/\r?\n/g, " ")).replace(/[ \t]{2,}/g, " ").trim();
+  if (pattern.test(cleaned)) {
+    return cleaned;
+  }
+
+  const spaceIdx = cleaned.indexOf(" ");
+  let reshaped = cleaned;
+  if (spaceIdx > 0) {
+    const verb = cleaned.slice(0, spaceIdx).toLowerCase().replace(/[^a-z0-9-]/g, "");
+    const object = cleaned.slice(spaceIdx + 1).trim();
+    if (verb.length > 0 && object.length > 0) {
+      reshaped = `${verb}: ${object}`;
+    }
+  }
+
+  if (pattern.test(reshaped)) {
+    return reshaped;
+  }
+  throw new PrTitleValidationError(reshaped, pattern);
+}
+
+/**
+ * Wraps `content` in a mermaid-tagged fenced code block using a backtick
+ * run one longer than the longest backtick run already inside `content` --
+ * the standard CommonMark technique for making a fence un-closeable by
+ * content it wraps, applied here specifically so a plan-generated diagram
+ * containing its own ``` cannot break out of the block. Returns undefined
+ * (never an empty/broken fence) when `content` is absent or blank, so
+ * callers can `if (block) bodyParts.push(block)` and cleanly omit the whole
+ * diagram section.
+ */
+export function fenceMermaid(content: string | undefined): string | undefined {
+  if (!content || content.trim().length === 0) return undefined;
+  const trimmed = content.trim();
+  const longestRun = Math.max(0, ...(trimmed.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = "`".repeat(Math.max(3, longestRun + 1));
+  return `${fence}mermaid\n${trimmed}\n${fence}`;
+}
+
+/**
+ * Renders the per-command validation evidence for the PR body. Exit codes,
+ * labels, and durations only -- deliberately NOT `CheckResult.outputTail`.
+ * `outputTail` is already best-effort secret-redacted (`redactSecrets` in
+ * validation-commands.ts), but that redaction is pattern-based and
+ * incomplete by nature; the PR body is pushed to GitHub, an outbound
+ * channel, so this module treats exit codes/durations/counts as the
+ * reviewable evidence and leaves raw command output in the journal (which a
+ * human reviewer with run access can still open) rather than re-publishing
+ * it somewhere with weaker redaction guarantees.
+ *
+ * Only `role: "gate"` validation_command_run evidence exists today (see
+ * verify.ts/pipeline.ts) -- "reproduce_before"/"reproduce_after" are
+ * reserved for a future phase's before/after-the-fix flow that isn't built.
+ * This function therefore always renders reproduction status as explicitly
+ * "not established", never as a pass and never silently omitted -- absence
+ * of that evidence must never read as "fine".
+ */
+export function renderVerificationSection(verdict: Verdict): string {
+  const lines: string[] = [];
+  const outcomeLabel = verdict.outcome === "pass" ? "PASS" : "FAIL";
+  lines.push(`Gate verdict: **${outcomeLabel}** -- ${toSafeInline(verdict.summary, 300)}`);
+  lines.push("");
+  if (verdict.noValidationCommandsConfigured) {
+    lines.push("_No validation commands are configured for this project -- the verdict above is vacuously pass, not a measured one._");
+  } else if (verdict.checks.length > 0) {
+    lines.push("| Command | Exit code | Duration | Timed out |");
+    lines.push("| --- | --- | --- | --- |");
+    for (const check of verdict.checks) {
+      const label = toSafeInline(check.label ?? check.command, 120).replace(/\|/g, "\\|");
+      lines.push(`| ${label} | ${check.exitCode} | ${check.durationMs}ms | ${check.timedOut ? "yes" : "no"} |`);
+    }
+  }
+  lines.push("");
+  lines.push(
+    "Reproduced before the fix: **not established** -- this run only ever records `role: \"gate\"` evidence (the full validation suite, run once after the fix). No before/after reproduction was captured.",
+  );
+  return lines.join("\n");
+}
+
+/**
+ * Renders the advisory-only Codex review section. `unavailable` never
+ * renders as reviewed-and-clean -- it is its own distinct, explicit state,
+ * same for a project that opted the pass out entirely (`codexAdvisory`
+ * undefined). This review never gates the PR either way; the section says
+ * so explicitly so a human reviewer doesn't mistake "advisory, no blocker"
+ * for a second required approval.
+ */
+export function renderCodexAdvisorySection(codexAdvisory: CodexAdvisoryResult | undefined): string {
+  if (!codexAdvisory) {
+    return "Not run for this project (`ProjectConfig.codexAdvisoryReviewDisabled`). Advisory only either way -- absence here is not a finding.";
+  }
+  if (codexAdvisory.status === "unavailable") {
+    return `**Unavailable** -- ${toSafeInline(codexAdvisory.unavailableReason ?? "no reason recorded", 300)}. This is NOT a clean review; it is an absence of one.`;
+  }
+  if (codexAdvisory.status === "reviewed_blocker") {
+    const findings = codexAdvisory.findings
+      .map((f) => `- **[${f.severity}]** ${toSafeInline(f.claim, 300)}`)
+      .join("\n");
+    return `Reviewed -- advisory blocker(s) raised (does not block this PR, advisory only):\n\n${findings}`;
+  }
+  return "Reviewed -- no blocker raised (advisory only).";
+}
+
+export interface BuildPrContentInput {
+  runId: string;
+  planClaim?: string;
+  planMarkdown: string;
+  planDiagram?: string;
+  verdict: Verdict;
+  codexAdvisory: CodexAdvisoryResult | undefined;
+  unresolvedNonBlockers: ReviewResult["objections"];
+  prTitlePattern?: RegExp;
+}
+
+export interface BuiltPrContent {
+  title: string;
+  body: string;
+}
+
+/**
+ * The single place title+body are assembled -- exported so tests can drive
+ * it directly with fixture inputs instead of running a whole pipeline.
+ *
+ * Title derivation degrades in two steps, never opting straight for a hard
+ * failure just because a caller started passing `planClaim`: try the claim
+ * first (it is the more human-legible source), but if it isn't reshapeable
+ * into `pattern` (e.g. a single word, or something `derivePrTitle` can't
+ * turn into `verb: object`), fall back to the markdown-derived source that
+ * worked before this field existed. Only if BOTH sources fail to satisfy
+ * `pattern` does this rethrow -- a run that opened fine pre-wiring must not
+ * start throwing at PR-open time purely because a claim got populated.
+ */
+export function buildPrContent(input: BuildPrContentInput): BuiltPrContent {
+  const pattern = input.prTitlePattern ?? DEFAULT_PR_TITLE_PATTERN;
+  const titleSource = derivePrTitleSource({ planClaim: input.planClaim, planMarkdown: input.planMarkdown });
+  let title: string;
+  try {
+    title = derivePrTitle(titleSource, pattern);
+  } catch (err) {
+    if (!(err instanceof PrTitleValidationError) || !input.planClaim) throw err;
+    // The claim didn't reshape cleanly -- retry from planMarkdown alone,
+    // exactly the source a caller without a claim would have used.
+    const markdownSource = derivePrTitleSource({ planMarkdown: input.planMarkdown });
+    title = derivePrTitle(markdownSource, pattern);
+  }
+
+  const sections: string[] = [];
+
+  const claimText = toSafeInline(input.planClaim ?? titleSource, 500);
+  sections.push("## Summary", "", claimText || "_(no plan summary available)_");
+
+  const diagramBlock = fenceMermaid(input.planDiagram);
+  if (diagramBlock) {
+    sections.push("", "## Diagram", "", diagramBlock);
+  }
+
+  sections.push("", "## Verification", "", renderVerificationSection(input.verdict));
+  sections.push("", "## Codex advisory review", "", renderCodexAdvisorySection(input.codexAdvisory));
+
+  if (input.unresolvedNonBlockers.length > 0) {
+    sections.push(
+      "",
+      "## Unresolved review objections",
+      "",
+      "Major/minor -- not blocking, but visible for the human reviewer:",
+      "",
+      ...input.unresolvedNonBlockers.map(
+        (o) => `- **[${o.severity}]** ${toSafeInline(o.claim, 300)} -- suggested: ${toSafeInline(o.suggested_change, 300)}`,
+      ),
+    );
+  }
+
+  // Mandatory per the mined-rule PR template -- always present, never
+  // conditional on whether anything in this run actually touched an
+  // AGENTS.md/CLAUDE.md file, so a reviewer always has to answer it rather
+  // than the section quietly disappearing when it's most needed.
+  sections.push("", "## AGENTS.md delta?", "", "- [ ] Does this change need an AGENTS.md/CLAUDE.md update? (reviewer to confirm)");
+
+  sections.push("", `_Run: \`${toSafeInline(input.runId, 200)}\`_`);
+
+  return { title, body: sections.join("\n") };
 }
 
 export interface Gate2PipelineResult {
@@ -481,22 +760,20 @@ export async function runGate2Pipeline(opts: Gate2PipelineOptions): Promise<Gate
         : { repo: await deriveRepoSlug(opts.worktreePath) });
 
     const unresolvedNonBlockers = review.objections.filter((o) => o.severity !== "blocker");
-    const bodyLines = [
-      `Automated Gate 2 pipeline for run \`${opts.runId}\`.`,
-      "",
-      `Verification: **${verdict.outcome}** -- ${verdict.summary}`,
-      "",
-    ];
-    if (unresolvedNonBlockers.length > 0) {
-      bodyLines.push(
-        "Unresolved review objections (major/minor -- not blocking, but visible for the human reviewer):",
-        "",
-        ...unresolvedNonBlockers.map((o) => `- **[${o.severity}]** ${o.claim} -- suggested: ${o.suggested_change}`),
-        "",
-      );
-    }
-    const body = bodyLines.join("\n");
-    const title = `[pros ${opts.runId}] automated implementation`;
+    // `projectForAdvisory` (resolved above, same repo lookup the Codex
+    // advisory pass used) is also this run's source for
+    // `ProjectConfig.prTitlePattern` -- one resolution, two consumers,
+    // rather than resolving the project twice.
+    const { title, body } = buildPrContent({
+      runId: opts.runId,
+      planClaim: opts.planClaim,
+      planMarkdown: opts.planMarkdown,
+      planDiagram: opts.planDiagram,
+      verdict,
+      codexAdvisory,
+      unresolvedNonBlockers,
+      prTitlePattern: projectForAdvisory?.prTitlePattern,
+    });
 
     const prIntentId = randomUUID();
     const prIdempotencyKey = `pr-${opts.runId}`;

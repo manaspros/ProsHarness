@@ -19,11 +19,13 @@ import {
   type PrCreatedPayload,
 } from "../../../../lib/review-data";
 import type { ChecklistItem } from "@pros/review";
+import { getEvidenceSignals, computeConfidence } from "../../../../lib/evidence-signals";
 import { SectionHeading } from "../../../../components/SectionHeading";
 import { Surface } from "../../../../components/Surface";
 import { EmptyState } from "../../../../components/EmptyState";
 import { StatusPill } from "../../../../components/StatusPill";
 import { Alert } from "../../../../components/Alert";
+import { EvidenceSignalsPanel } from "../../../../components/EvidenceSignalsPanel";
 import { cn } from "../../../../lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -43,15 +45,17 @@ export default async function ReviewPage({ params }: { params: Promise<{ runId: 
   const dbPath = getIndexDbPath();
 
   const { db } = await rebuildAndOpenIndex(dbPath, runsRoot);
-  let worktree, verdict, review, prCreated;
+  let worktree, verdict, review, prCreated, evidenceSignals;
   try {
     worktree = getWorktreeInfo(db, runId);
     verdict = parseLatestEventOfKind<VerifyVerdictPayload>(db, runId, "verify_verdict");
     review = parseLatestEventOfKind<ReviewCompletedPayload>(db, runId, "review_completed");
     prCreated = parseLatestEventOfKind<PrCreatedPayload>(db, runId, "pr_created");
+    evidenceSignals = getEvidenceSignals(db, runId);
   } finally {
     db.close();
   }
+  const confidence = computeConfidence(evidenceSignals);
 
   const backLink = (
     <Link href="/pr-checks" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
@@ -94,6 +98,10 @@ export default async function ReviewPage({ params }: { params: Promise<{ runId: 
             title="No PR opened yet"
             description="This run's implementation has a worktree, but no PR has been opened for it yet."
           />
+        </Surface>
+
+        <Surface elevation="raised" className="p-5">
+          <EvidenceSignalsPanel signals={evidenceSignals} confidence={confidence} />
         </Surface>
 
         {(verdict || review) && (
@@ -186,6 +194,15 @@ export default async function ReviewPage({ params }: { params: Promise<{ runId: 
           </a>
         }
       />
+
+      {/* Gate 2 decision card (Phase 5a): the four binary evidence signals,
+          built on the SAME deterministic data already computed by
+          @pros/review's hunks/checklist and lib/review-data.ts below --
+          this panel adds nothing new to compute, only a glanceable summary
+          of facts the rest of this page already displays in more detail. */}
+      <Surface elevation="raised" className="p-5">
+        <EvidenceSignalsPanel signals={evidenceSignals} confidence={confidence} />
+      </Surface>
 
       <Surface elevation="raised" className="space-y-3 p-5">
         <p className="text-sm text-foreground/90">

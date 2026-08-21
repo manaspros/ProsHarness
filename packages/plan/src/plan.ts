@@ -13,6 +13,17 @@ export interface PlanDoc {
   sessionId?: string;
 }
 
+/**
+ * `diagram` and `claim` (Phase 5a): a Mermaid-source diagram of the change
+ * and a one-paragraph plain-language restatement of what the plan claims to
+ * do, so the Gate 1 decision card can be glanceable instead of requiring a
+ * human to read the full prose plan. Both are REQUIRED on every new plan
+ * response -- but runs drafted before this change have neither in their
+ * stored `structured_json`, and the dashboard's `parseStructuredPlan`
+ * (packages/dashboard/lib/structured-plan.ts) treats them as optional for
+ * exactly that reason: an old run must degrade gracefully, never crash the
+ * page or render a broken box.
+ */
 const PLAN_SCHEMA = {
   type: "object",
   properties: {
@@ -23,8 +34,10 @@ const PLAN_SCHEMA = {
         steps: { type: "array", items: { type: "string" } },
         filesTouched: { type: "array", items: { type: "string" } },
         risk: { type: "string" },
+        diagram: { type: "string" },
+        claim: { type: "string" },
       },
-      required: ["steps", "filesTouched", "risk"],
+      required: ["steps", "filesTouched", "risk", "diagram", "claim"],
     },
   },
   required: ["markdown", "structured"],
@@ -76,7 +89,9 @@ export async function draftPlan(session: ModelSession, opts: DraftPlanOptions): 
     "",
     "Conclude with a single JSON object (matching the provided schema) with:",
     '  - "markdown": a human-readable plan (steps, rationale, risk) in Markdown',
-    '  - "structured": {steps: string[], filesTouched: string[], risk: string} summarizing the same plan',
+    '  - "structured": {steps: string[], filesTouched: string[], risk: string, diagram: string, claim: string} summarizing the same plan, where:',
+    '    - "diagram" is a Mermaid diagram (flowchart/sequence/etc, your choice of the best fit) illustrating the change, as raw Mermaid source only (no surrounding markdown fence)',
+    '    - "claim" is a single plain-language paragraph (no jargon a non-engineer reading this could not follow) stating what this plan claims will be true once implemented',
   ].join("\n");
 
   const result = await session.run({
@@ -141,8 +156,9 @@ export async function revisePlan(session: ModelSession, opts: RevisePlanOptions)
     "Conclude with a single JSON object (matching the provided schema) with:",
     '  - "markdown": the revised human-readable plan in Markdown, INCLUDING a short "Objection responses" section',
     "    listing each objection's claim and whether you accepted or rejected it and why",
-    '  - "structured": {steps: string[], filesTouched: string[], risk: string,',
+    '  - "structured": {steps: string[], filesTouched: string[], risk: string, diagram: string, claim: string,',
     '    objectionResolutions: {claim: string, resolution: "accepted"|"rejected", note: string}[]}',
+    '    ("diagram" is a Mermaid diagram of the revised change; "claim" is a one-paragraph plain-language restatement of what the revised plan claims will be true once implemented)',
     "",
     findingBlock(opts.finding),
   ].join("\n");
@@ -157,6 +173,8 @@ export async function revisePlan(session: ModelSession, opts: RevisePlanOptions)
           steps: { type: "array", items: { type: "string" } },
           filesTouched: { type: "array", items: { type: "string" } },
           risk: { type: "string" },
+          diagram: { type: "string" },
+          claim: { type: "string" },
           objectionResolutions: {
             type: "array",
             items: {
@@ -170,7 +188,7 @@ export async function revisePlan(session: ModelSession, opts: RevisePlanOptions)
             },
           },
         },
-        required: ["steps", "filesTouched", "risk", "objectionResolutions"],
+        required: ["steps", "filesTouched", "risk", "diagram", "claim", "objectionResolutions"],
       },
     },
     required: ["markdown", "structured"],
@@ -226,7 +244,8 @@ export async function refinePlanWithInstruction(session: ModelSession, opts: Ref
     "",
     "Conclude with a single JSON object (matching the provided schema) with:",
     '  - "markdown": the updated human-readable plan in Markdown',
-    '  - "structured": {steps: string[], filesTouched: string[], risk: string}',
+    '  - "structured": {steps: string[], filesTouched: string[], risk: string, diagram: string, claim: string}',
+    '    ("diagram" is a Mermaid diagram of the updated change; "claim" is a one-paragraph plain-language restatement of what the updated plan claims will be true once implemented)',
   ].join("\n");
 
   const result = await session.run({

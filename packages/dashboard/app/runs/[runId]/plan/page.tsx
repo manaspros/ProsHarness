@@ -21,6 +21,8 @@ import { resolveCurrentPlan } from "../../../../lib/plan-doc";
 import { PLAN_APPROVAL_ACTIONS } from "../../../../lib/gate-actions";
 import { getPlanOperationStatus, getWorktreeInfo, type PlanOperationStatus } from "../../../../lib/review-data";
 import { getSessionActivity } from "../../../../lib/session-activity";
+import { parseStructuredPlan, type StructuredPlan } from "../../../../lib/structured-plan";
+import { getEvidenceSignals, computeConfidence } from "../../../../lib/evidence-signals";
 import { splitMarkdownIntoSections, findMatchingSection } from "./plan-sections";
 import { Surface } from "@/components/Surface";
 import { StatusPill, type Status } from "@/components/StatusPill";
@@ -29,6 +31,8 @@ import { EmptyState } from "@/components/EmptyState";
 import { PlanMarkdown } from "@/components/PlanMarkdown";
 import { PlanPipelineStatus } from "@/components/PlanPipelineStatus";
 import { LiveSessionPanel } from "@/components/LiveSessionPanel";
+import { MermaidDiagram } from "@/components/MermaidDiagram";
+import { EvidenceSignalsPanel } from "@/components/EvidenceSignalsPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -61,13 +65,17 @@ export default async function PlanPage({
 
   const dbPath = getIndexDbPath();
   const { db } = await rebuildAndOpenIndex(dbPath, runsRoot);
-  let plans, objections, worktree, operation;
+  let plans, objections, worktree, operation, evidenceSignals;
   try {
     plans = getPlans(db, runId);
     const current = resolveCurrentPlan(plans);
     objections = current ? getObjections(db, current.plan_id) : [];
     worktree = getWorktreeInfo(db, runId);
     operation = getPlanOperationStatus(db, runId);
+    // Signals from a prior implementation attempt on this run, if any (e.g.
+    // an amendment loop after a failed verify) -- honestly "not established"
+    // across the board for a fresh run that hasn't reached Gate 2 yet.
+    evidenceSignals = getEvidenceSignals(db, runId);
   } finally {
     db.close();
   }
@@ -141,6 +149,8 @@ export default async function PlanPage({
         <PlanContent
           runId={runId}
           current={current}
+          structured={parseStructuredPlan(current.structured_json)}
+          evidenceSignals={evidenceSignals}
           unresolvedObjections={unresolvedObjections}
           worktree={worktree}
           parkedApprovalCheckpoint={parkedApprovalCheckpoint}
@@ -184,13 +194,25 @@ function LoadingStep({ label }: { label: string }) {
 function PlanContent({
   runId,
   current,
+  structured,
+  evidenceSignals,
   unresolvedObjections,
   worktree,
   parkedApprovalCheckpoint,
   operation,
 }: {
   runId: string;
-  current: { plan_id: string; version: number; state: string; markdown: string; edited_at: string | null; edited_by: string | null };
+  current: {
+    plan_id: string;
+    version: number;
+    state: string;
+    markdown: string;
+    structured_json: string;
+    edited_at: string | null;
+    edited_by: string | null;
+  };
+  structured: StructuredPlan | undefined;
+  evidenceSignals: ReturnType<typeof getEvidenceSignals>;
   unresolvedObjections: ObjectionRow[];
   worktree: { repoRoot: string; worktreePath: string | null; branch: string | null; baseSha: string | null } | undefined;
   parkedApprovalCheckpoint: { checkpointId: string; prompt: string } | undefined;
@@ -198,6 +220,7 @@ function PlanContent({
 }) {
   const sections = splitMarkdownIntoSections(current.markdown);
   const encodedRunId = encodeURIComponent(runId);
+  const confidence = computeConfidence(evidenceSignals);
 
   return (
     <div className="mt-6 grid grid-cols-1 gap-5 xl:grid-cols-[176px_minmax(0,1fr)_340px]">
@@ -252,13 +275,71 @@ function PlanContent({
           </div>
         )}
 
-        <div className="mt-7">
-          {sections.map((section) => (
-            <div key={section.id} id={section.id}>
-              <PlanMarkdown>{section.markdown}</PlanMarkdown>
+        {/* Decision-card content (Phase 5a): diagram, plain-language claim,
+            files/risk, and the four evidence signals -- all already computed
+            elsewhere and previously discarded (B6) or orphaned (B7). The
+            full prose plan moves behind a disclosure, per the brief, rather
+            than being removed. */}
+        <div className="mt-6">
+          {structured?.diagram ? (
+            <MermaidDiagram source={structured.diagram} diagramId={`${current.plan_id}-v${current.version}`} />
+          ) : (
+            <div className="rounded-md border border-dashed border-border p-4 text-xs text-muted-foreground">
+              No diagram recorded for this plan version (older plans predate this field, or the model omitted it).
             </div>
-          ))}
+          )}
         </div>
+
+        <div className="mt-5">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Claim</p>
+          <p className="mt-1.5 text-sm leading-relaxed text-foreground/90">
+            {structured?.claim ?? "No plain-language claim recorded for this plan version -- see the full plan below."}
+          </p>
+        </div>
+
+        {structured && (structured.filesTouched.length > 0 || structured.risk) && (
+          <div className="mt-5 grid grid-cols-1 gap-4 border-t border-border pt-4 sm:grid-cols-2">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                Files touched
+              </p>
+              {structured.filesTouched.length === 0 ? (
+                <p className="mt-1.5 text-xs text-muted-foreground">none recorded</p>
+              ) : (
+                <ul className="mt-1.5 space-y-1">
+                  {structured.filesTouched.map((f) => (
+                    <li key={f} className="truncate font-mono text-xs text-foreground/80">
+                      {f}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Risk</p>
+              <p className="mt-1.5 text-sm text-foreground/90">{structured.risk || "not stated"}</p>
+            </div>
+          </div>
+        )}
+
+        <div className="mt-5 border-t border-border pt-4">
+          <EvidenceSignalsPanel signals={evidenceSignals} confidence={confidence} />
+        </div>
+
+        <Collapsible className="mt-6 border-t border-border pt-4">
+          <CollapsibleTrigger asChild>
+            <Button variant="outline" size="sm">
+              Show full plan document
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="mt-4">
+            {sections.map((section) => (
+              <div key={section.id} id={section.id}>
+                <PlanMarkdown>{section.markdown}</PlanMarkdown>
+              </div>
+            ))}
+          </CollapsibleContent>
+        </Collapsible>
 
         <EditPlanPanel runId={runId} current={current} />
       </Surface>
